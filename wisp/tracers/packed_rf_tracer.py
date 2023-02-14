@@ -23,6 +23,7 @@ class PackedRFTracer(BaseTracer):
     This tracer class expects the neural field to expose a BLASGrid: a Bottom-Level-Acceleration-Structure Grid,
     i.e. a grid that inherits the BLASGrid class for both a feature structure and an occupancy acceleration structure).
     """
+
     def __init__(self, raymarch_type='voxel', num_steps=128, step_size=1.0, bg_color='white'):
         """Set the default trace() arguments.
 
@@ -51,7 +52,7 @@ class PackedRFTracer(BaseTracer):
 
     def get_supported_channels(self):
         """Returns the set of channel names this tracer may output.
-        
+
         Returns:
             (set): Set of channel strings.
         """
@@ -59,7 +60,7 @@ class PackedRFTracer(BaseTracer):
 
     def get_required_nef_channels(self):
         """Returns the channels required by neural fields to be compatible with this tracer.
-        
+
         Returns:
             (set): Set of channel strings.
         """
@@ -71,12 +72,12 @@ class PackedRFTracer(BaseTracer):
 
         Args:
             nef (nn.Module): A neural field that uses a grid class.
-            channels (set): The set of requested channels. The trace method can return channels that 
+            channels (set): The set of requested channels. The trace method can return channels that
                             were not requested since those channels often had to be computed anyways.
             extra_channels (set): If there are any extra channels requested, this tracer will by default
                                   perform volumetric integration on those channels.
             rays (wisp.core.Rays): Ray origins and directions of shape [N, 3]
-            lod_idx (int): LOD index to render at. 
+            lod_idx (int): LOD index to render at.
             raymarch_type (str): The type of raymarching algorithm to use. Currently we support:
                                  voxel: Finds num_steps # of samples per intersected voxel
                                  ray: Finds num_steps # of samples per ray, and filters them by intersected samples
@@ -88,20 +89,20 @@ class PackedRFTracer(BaseTracer):
         Returns:
             (wisp.RenderBuffer): A dataclass which holds the output buffers from the render.
         """
-        #TODO(ttakikawa): Use a more robust method
+        # TODO(ttakikawa): Use a more robust method
         assert nef.grid is not None and "this tracer requires a grid"
 
         N = rays.origins.shape[0]
-        
+
         if "depth" in channels:
             depth = torch.zeros(N, 1, device=rays.origins.device)
-        else: 
-            depth = None
-        
-        if bg_color == 'white':
-            rgb = torch.ones(N, 3, device=rays.origins.device)
         else:
-            rgb = torch.zeros(N, 3, device=rays.origins.device)
+            depth = None
+
+        # if bg_color == 'white':
+        #     feats_ch = torch.ones(N, 3, device=rays.origins.device)
+        # else:
+        #     feats_ch = torch.zeros(N, 3, device=rays.origins.device)
         hit = torch.zeros(N, device=rays.origins.device, dtype=torch.bool)
         out_alpha = torch.zeros(N, 1, device=rays.origins.device)
 
@@ -128,14 +129,14 @@ class PackedRFTracer(BaseTracer):
 
         # Compute the color and density for each ray and their samples
         num_samples = samples.shape[0]
-        color, density = nef(coords=samples, ray_d=hit_ray_d, lod_idx=lod_idx, channels=["rgb", "density"])
-        density = density.reshape(num_samples, 1)    # Protect against squeezed return shape
+        raw_feats, density = nef(coords=samples, ray_d=hit_ray_d, lod_idx=lod_idx, channels=["raw_feats", "density"])
+        density = density.reshape(num_samples, 1)  # Protect against squeezed return shape
         del ridx
 
         # Compute optical thickness
         tau = density * deltas
         del density, deltas
-        ray_colors, transmittance = spc_render.exponential_integration(color, tau, boundary, exclusive=True)
+        ray_raw_featss, transmittance = spc_render.exponential_integration(raw_feats, tau, boundary, exclusive=True)
 
         if "depth" in channels:
             ray_depth = spc_render.sum_reduce(depths.reshape(num_samples, 1) * transmittance, boundary)
@@ -143,14 +144,15 @@ class PackedRFTracer(BaseTracer):
 
         alpha = spc_render.sum_reduce(transmittance, boundary)
         out_alpha[ridx_hit] = alpha
-        hit[ridx_hit] = alpha[...,0] > 0.0
+        hit[ridx_hit] = alpha[..., 0] > 0.0
 
         # Populate the background
-        if bg_color == 'white':
-            color = (1.0-alpha) + ray_colors
-        else:
-            color = alpha * ray_colors
-        rgb[ridx_hit] = color
+        # if bg_raw_feats == 'white':
+        #     raw_feats = (1.0-alpha) + ray_raw_featss
+        # else:
+        #     raw_feats = alpha * ray_raw_featss
+        feats_ch = torch.zeros(N, raw_feats.shape[2], device=rays.origins.device)
+        feats_ch[ridx_hit] = raw_feats
 
         extra_outputs = {}
         for channel in extra_channels:
@@ -167,5 +169,5 @@ class PackedRFTracer(BaseTracer):
             out_feats[ridx_hit] = composited_feats
             extra_outputs[channel] = out_feats
 
-        return RenderBuffer(depth=depth, hit=hit, rgb=rgb, alpha=out_alpha, **extra_outputs)
+        return RenderBuffer(depth=depth, hit=hit, feats_ch=feats_ch, alpha=out_alpha, **extra_outputs)
 

@@ -226,12 +226,12 @@ class NeuralRadianceField(BaseNeuralField):
 
         # Colors are values [0, 1] floats
         # colors ~ (batch, 3)
-        colors = torch.sigmoid(self.decoder_color(fdir))
+        # colors = torch.sigmoid(self.decoder_color(fdir))
 
         # Density is [particles / meter], so need to be multiplied by distance
         # density ~ (batch, 1)
         density = torch.relu(density_feats[...,0:1])
-        return dict(rgb=colors, density=density)
+        return dict(feats=feats, density=density)
 
     def effective_feature_dim(self):
         if self.grid.multiscale_type == 'cat':
