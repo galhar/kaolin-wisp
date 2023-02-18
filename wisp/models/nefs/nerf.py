@@ -189,6 +189,10 @@ class NeuralRadianceField(BaseNeuralField):
         """
         self._register_forward_function(self.feats_a, ["density", "feats"])
 
+    def rgba(self, coords, ray_d, lod_idx=None):
+        # Only to allow loading of the NeRF
+        pass
+
     def feats_a(self, coords, ray_d, lod_idx=None):
         """Compute color and density [particles / vol] for the provided coordinates.
 
