@@ -385,7 +385,7 @@ class WispApp(ABC):
         """
         # The render core returns a RenderBuffer
         renderbuffer = render_core.render(time_delta, force_render)
-        buffer_attachment = renderbuffer.image().rgba
+        buffer_attachment = renderbuffer.image().feats_a
         buffer_attachment = buffer_attachment.flip([0])  # Flip y axis
         img = buffer_attachment.byte().contiguous()
 

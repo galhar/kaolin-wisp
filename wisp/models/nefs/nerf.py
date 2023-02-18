@@ -187,9 +187,9 @@ class NeuralRadianceField(BaseNeuralField):
     def register_forward_functions(self):
         """Register the forward functions.
         """
-        self._register_forward_function(self.rgba, ["density", "rgb"])
+        self._register_forward_function(self.feats_a, ["density", "feats"])
 
-    def rgba(self, coords, ray_d, lod_idx=None):
+    def feats_a(self, coords, ray_d, lod_idx=None):
         """Compute color and density [particles / vol] for the provided coordinates.
 
         Args:
