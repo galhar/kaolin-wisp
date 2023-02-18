@@ -131,7 +131,7 @@ class PackedRFTracer(BaseTracer):
         num_samples = samples.shape[0]
         nef.register_forward_functions()
         nef.supported_channels = set(
-            [channel for channels in self._forward_functions.values() for channel in channels])
+            [channel for channels in nef._forward_functions.values() for channel in channels])
         raw_feats, density = nef(coords=samples, ray_d=hit_ray_d, lod_idx=lod_idx, channels=["feats", "density"])
         density = density.reshape(num_samples, 1)  # Protect against squeezed return shape
         del ridx
