@@ -6,13 +6,14 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
-import logging as log
+
 import os
 import argparse
 import logging
 import numpy as np
 import torch
 from tqdm import tqdm
+import logging as log
 
 import wisp
 from wisp.app_utils import default_log_setup, args_to_log_format
@@ -74,7 +75,7 @@ def parse_args():
                                  'For a 3D grid structure, linear uses trilinear interpolation of 8 cell nodes,'
                                  'closest uses the nearest neighbor.')
     grid_group.add_argument('--blas-type', type=str, default='octree',  # TODO(operel)
-                            choices=['octree', ],
+                            choices=['octree',],
                             help='Type of acceleration structure to use for fast raymarch occupancy queries.')
     grid_group.add_argument('--multiscale-type', type=str, default='sum', choices=['sum', 'cat'],
                             help='Aggregation of choice for multi-level grids, for features from different LODs.')
@@ -170,11 +171,11 @@ def parse_args():
     trainer_group.add_argument('--grow-every', type=int, default=-1,
                                help='Grow network every X epochs')
     trainer_group.add_argument('--growth-strategy', type=str, default='increase',
-                               choices=['onebyone',  # One by one trains one level at a time.
-                                        'increase',  # Increase starts from [0] and ends up at [0,...,N]
-                                        'shrink',  # Shrink strats from [0,...,N] and ends up at [N]
+                               choices=['onebyone',      # One by one trains one level at a time.
+                                        'increase',      # Increase starts from [0] and ends up at [0,...,N]
+                                        'shrink',        # Shrink strats from [0,...,N] and ends up at [N]
                                         'finetocoarse',  # Fine to coarse starts from [N] and ends up at [0,...,N]
-                                        'onlylast'],  # Only last starts and ends at [N]
+                                        'onlylast'],     # Only last starts and ends at [N]
                                help='Strategy for coarse-to-fine training')
     trainer_group.add_argument('--valid-only', action='store_true',
                                help='Run validation only (and do not run training).')
@@ -193,6 +194,8 @@ def parse_args():
                                     'Set this to 0 to disable 360 degree visualizations.')
     trainer_group.add_argument('--wandb-viz-nerf-distance', type=int, default=3,
                                help='Distance to visualize Scene from on Weights & Biases')
+    trainer_group.add_argument('--render_features', action='store_true',
+                               help='Only render the features, do not train or anything.')
 
     optimizer_group = parser.add_argument_group('optimizer')
     optimizer_group.add_argument('--optimizer-type', type=str, default='adam',
@@ -227,6 +230,10 @@ def parse_args():
                                         help='Camera projection.')
     offline_renderer_group.add_argument('--camera-clamp', nargs=2, type=float, default=[0, 10],
                                         help='Camera clipping bounds.')
+
+    nef_group.add_argument('--extra_channel', type=str, choices=['grid_features'],
+                           default='grid_features',
+                           help='Extra channel of grid_features if desired')
 
     # Parse CLI args & config files
     args = config_parser.parse_args(parser)
@@ -374,8 +381,8 @@ def load_neural_field(args, dataset: MultiviewDataset) -> BaseNeuralField:
         layer_type=args.layer_type,
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
-        prune_density_decay=args.prune_density_decay,  # Used only for grid types which support pruning
-        prune_min_density=args.prune_min_density  # Used only for grid types which support pruning
+        prune_density_decay=args.prune_density_decay,   # Used only for grid types which support pruning
+        prune_min_density=args.prune_min_density        # Used only for grid types which support pruning
     )
     return nef
 
@@ -391,8 +398,8 @@ def load_tracer(args) -> BaseTracer:
     grid to generate samples and decode them to pixel values.
     """
     tracer = PackedRFTracer(
-        raymarch_type=args.raymarch_type,  # Chooses the ray-marching algorithm
-        num_steps=args.num_steps,  # Number of steps depends on raymarch_type
+        raymarch_type=args.raymarch_type,   # Chooses the ray-marching algorithm
+        num_steps=args.num_steps,           # Number of steps depends on raymarch_type
         bg_color=args.bg_color
     )
     return tracer
@@ -451,23 +458,6 @@ def load_trainer(pipeline, train_dataset, validation_dataset, device, scene_stat
     return trainer
 
 
-def load_app(args, scene_state, trainer):
-    """ Used only in interactive mode. Creates an interactive app, which employs a renderer which displays
-    the latest information from the trainer (see: OptimizationApp).
-    The OptimizationApp can be customized or further extend to support even more functionality.
-    """
-    if not is_interactive():
-        logging.info("Running headless. For the app, set $WISP_HEADLESS=0.")
-        return None  # Interactive mode is disabled
-    else:
-        from wisp.renderer.app.optimization_app import OptimizationApp
-        scene_state.renderer.device = trainer.device  # Use same device for trainer and app renderer
-        app = OptimizationApp(wisp_state=scene_state,
-                              trainer_step_func=trainer.iterate,
-                              experiment_name="wisp trainer")
-        return app
-
-
 def generate_and_save_feature_images(trainer):
     trainer.pipeline.eval()
 
@@ -516,24 +506,47 @@ def generate_and_save_feature_images(trainer):
             torch.save(os.path.join(trainer.valid_log_dir, out_name + "_features" + ".pt"), rb.cpu().feat_ch)
             torch.save(os.path.join(trainer.valid_log_dir, out_name + "_image" + ".pt"), gts.cpu().rgb)
 
+def load_app(args, scene_state, trainer):
+    """ Used only in interactive mode. Creates an interactive app, which employs a renderer which displays
+    the latest information from the trainer (see: OptimizationApp).
+    The OptimizationApp can be customized or further extend to support even more functionality.
+    """
+    if not is_interactive():
+        logging.info("Running headless. For the app, set $WISP_HEADLESS=0.")
+        return None  # Interactive mode is disabled
+    else:
+        from wisp.renderer.app.optimization_app import OptimizationApp
+        scene_state.renderer.device = trainer.device  # Use same device for trainer and app renderer
+        app = OptimizationApp(wisp_state=scene_state,
+                              trainer_step_func=trainer.iterate,
+                              experiment_name="wisp trainer")
+        return app
+
 
 def is_interactive() -> bool:
     """ Returns True if interactive mode with gui is on, False is HEADLESS mode is forced """
     return os.environ.get('WISP_HEADLESS') != '1'
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     args, args_dict = parse_args()  # Obtain args by priority: cli args > config yaml > argparse defaults
     default_log_setup(args.log_level)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     train_dataset, validation_dataset = load_dataset(args=args)
     pipeline = load_neural_pipeline(args=args, dataset=train_dataset, device=device)
-    scene_state = WispState()  # Joint trainer / app state
+    scene_state = WispState()   # Joint trainer / app state
     trainer = load_trainer(pipeline=pipeline,
                            train_dataset=train_dataset, validation_dataset=validation_dataset,
                            device=device, scene_state=scene_state,
                            args=args, args_dict=args_dict)
     app = load_app(args=args, scene_state=scene_state, trainer=trainer)
 
-    generate_and_save_feature_images(trainer)
+    if app is not None:
+        app.run()  # Run in interactive mode
+    else:
+        if args.render_features:
+            generate_and_save_feature_images(trainer)
+        elif args.valid_only:
+            trainer.validate()
+        else:
+            trainer.train()

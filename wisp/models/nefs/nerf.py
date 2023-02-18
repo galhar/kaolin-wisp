@@ -187,13 +187,10 @@ class NeuralRadianceField(BaseNeuralField):
     def register_forward_functions(self):
         """Register the forward functions.
         """
-        self._register_forward_function(self.feats_a, ["density", "feats"])
+        self._register_forward_function(self.rgba, ["density", "rgb"])
+        self._register_forward_function(self.feats_ch, ["grid_features"])
 
     def rgba(self, coords, ray_d, lod_idx=None):
-        # Only to allow loading of the NeRF
-        pass
-
-    def feats_a(self, coords, ray_d, lod_idx=None):
         """Compute color and density [particles / vol] for the provided coordinates.
 
         Args:
@@ -230,12 +227,56 @@ class NeuralRadianceField(BaseNeuralField):
 
         # Colors are values [0, 1] floats
         # colors ~ (batch, 3)
-        # colors = torch.sigmoid(self.decoder_color(fdir))
+        colors = torch.sigmoid(self.decoder_color(fdir))
 
         # Density is [particles / meter], so need to be multiplied by distance
         # density ~ (batch, 1)
         density = torch.relu(density_feats[...,0:1])
-        return dict(feats=feats, density=density)
+        return dict(rgb=colors, density=density)
+
+    def feats_ch(self, coords, ray_d, lod_idx=None):
+        """Compute color and density [particles / vol] for the provided coordinates.
+
+        Args:
+            coords (torch.FloatTensor): tensor of shape [batch, 3]
+            ray_d (torch.FloatTensor): tensor of shape [batch, 3]
+            lod_idx (int): index into active_lods. If None, will use the maximum LOD.
+
+        Returns:
+            {"rgb": torch.FloatTensor, "density": torch.FloatTensor}:
+                - RGB tensor of shape [batch, 3]
+                - Density tensor of shape [batch, 1]
+        """
+        if lod_idx is None:
+            lod_idx = len(self.grid.active_lods) - 1
+        batch, _ = coords.shape
+
+        # Embed coordinates into high-dimensional vectors with the grid.
+        feats = self.grid.interpolate(coords, lod_idx).reshape(batch, self.effective_feature_dim())
+
+        # Optionally concat the positions to the embedding
+        if self.pos_embedder is not None:
+            embedded_pos = self.pos_embedder(coords).view(batch, self.pos_embed_dim)
+            feats = torch.cat([feats, embedded_pos], dim=-1)
+
+        # Decode high-dimensional vectors to density features.
+        density_feats = self.decoder_density(feats)
+
+        # Concatenate embedded view directions.
+        if self.view_embedder is not None:
+            embedded_dir = self.view_embedder(-ray_d).view(batch, self.view_embed_dim)
+            fdir = torch.cat([density_feats, embedded_dir], dim=-1)
+        else:
+            fdir = density_feats
+
+        # Colors are values [0, 1] floats
+        # colors ~ (batch, 3)
+        colors = torch.sigmoid(self.decoder_color(fdir))
+
+        # Density is [particles / meter], so need to be multiplied by distance
+        # density ~ (batch, 1)
+        density = torch.relu(density_feats[..., 0:1])
+        return dict(grid_features=feats)
 
     def effective_feature_dim(self):
         if self.grid.multiscale_type == 'cat':
