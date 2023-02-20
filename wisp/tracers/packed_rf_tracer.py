@@ -55,7 +55,7 @@ class PackedRFTracer(BaseTracer):
         Returns:
             (set): Set of channel strings.
         """
-        return {"depth", "hit", "rgb", "alpha", "grid_features"}
+        return {"depth", "hit", "rgb", "alpha"}
 
     def get_required_nef_channels(self):
         """Returns the channels required by neural fields to be compatible with this tracer.
