@@ -505,7 +505,7 @@ def generate_and_save_feature_images(trainer):
         for idx, full_batch in tqdm(enumerate(dataset)):
             gts = full_batch['rgb'].to('cuda')
             rays = full_batch['rays'].to('cuda')
-            rb = trainer.renderer.render(trainer.pipeline, rays, lod_idx=lod_idx, extra_channels=['grid_features'])
+            rb = trainer.renderer.render(trainer.pipeline, rays, lod_idx=lod_idx)
 
             gts = gts.reshape(*img_shape, -1)
             rb = rb.reshape(*img_shape, -1)
