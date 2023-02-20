@@ -231,7 +231,7 @@ def parse_args():
     offline_renderer_group.add_argument('--camera-clamp', nargs=2, type=float, default=[0, 10],
                                         help='Camera clipping bounds.')
 
-    nef_group.add_argument('--extra_channel', type=str, choices=['grid_features'],
+    nef_group.add_argument('--extra_channels', type=str, choices=['grid_features'],
                            default='grid_features',
                            help='Extra channel of grid_features if desired')
 
