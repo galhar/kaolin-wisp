@@ -21,6 +21,7 @@ import wisp.config_parser as config_parser
 from wisp.framework import WispState
 from wisp.datasets import MultiviewDataset, SampleRays
 from wisp.models.grids import BLASGrid, OctreeGrid, CodebookOctreeGrid, TriplanarGrid, HashGrid
+from wisp.ops.raygen import generate_pinhole_rays
 from wisp.tracers import BaseTracer, PackedRFTracer
 from wisp.models.nefs import BaseNeuralField, NeuralRadianceField
 from wisp.models.pipeline import Pipeline
@@ -527,12 +528,38 @@ def is_interactive() -> bool:
     """ Returns True if interactive mode with gui is on, False is HEADLESS mode is forced """
     return os.environ.get('WISP_HEADLESS') != '1'
 
+def transform_from_camera_to_camera(dataset, image_1_str, image_2_str, image_1_p_c):
+    camera_1 = dataset.cameras[image_1_str]
+    camera_2 = dataset.cameras[image_2_str]
+
+    p1_c_raygrid = (torch.tensor(image_1_p_c[0]).repeat(2,2) + 0.5,torch.tensor(image_1_p_c[1]).repeat(2,2) + 0.5)
+    print(p1_c_raygrid)
+
+    p1_ray = generate_pinhole_rays(camera_1, p1_c_raygrid)
+    print(p1_ray.__str__().replace('),', '),\n'))
+
+    p1_w = p1_ray.origins + p1_ray.dirs * p1_c[2]
+    print(p1_w)
+
+    p1_c2 = camera_2.transform(p1_w)
+    print(p1_c2)
+
+
+    # Try to put back on camera 1
+    print(camera_1.transform(p1_w) * 200, )
+    return p1_c2, camera_1.transform(p1_w) * 200
+
 if __name__ == "__main__":
     args, args_dict = parse_args()  # Obtain args by priority: cli args > config yaml > argparse defaults
     default_log_setup(args.log_level)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     train_dataset, validation_dataset = load_dataset(args=args)
+
+    p1_c = (71, 62, 0.38)  # point in (y,x,d) in camera world of image 1
+    p2_c = (58, 51, 0.45)
+    transform_from_camera_to_camera(train_dataset, 'r_34', 'r_35', p1_c)
+
     pipeline = load_neural_pipeline(args=args, dataset=train_dataset, device=device)
     scene_state = WispState()   # Joint trainer / app state
     trainer = load_trainer(pipeline=pipeline,
