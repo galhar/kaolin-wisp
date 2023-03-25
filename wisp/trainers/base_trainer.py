@@ -134,7 +134,10 @@ class BaseTrainer(ABC):
         self.weight_decay = weight_decay
         self.grid_lr_weight = grid_lr_weight
         self.optim_params = optim_params
+        self.lr_scheduler_cls = torch.optim.lr_scheduler.StepLR
+        self.lr_scheduler_params = {'gamma': 0.33, 'step_size': 5}
         self.init_optimizer()
+
 
         # Training params
         self.epoch = 1
@@ -222,6 +225,7 @@ class BaseTrainer(ABC):
                        "lr": self.lr})
 
         self.optimizer = self.optim_cls(params, **self.optim_params)
+        self.lr_scheduler = self.lr_scheduler_cls(optimizer=self.optimizer, **self.lr_scheduler_params)
 
     def init_renderer(self):
         """Default initalization for the renderer.
@@ -296,6 +300,7 @@ class BaseTrainer(ABC):
         if self.epoch < self.max_epochs:
             self.iteration = 1
             self.epoch += 1
+            self.lr_scheduler.step()
         else:
             self.is_optimization_running = False
 
