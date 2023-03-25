@@ -157,7 +157,8 @@ class MultiviewTrainer(BaseTrainer):
         x = -camera_distance * np.sin(angles)
         y = self.extra_args["camera_origin"][1]
         z = -camera_distance * np.cos(angles)
-        for d in range(self.extra_args["num_lods"]):
+        num_lods = 1 # self.gridself.extra_args["num_lods"] # In hasgrid all lods here aer the same
+        for d in range(num_lods):
             out_rgb = []
             for idx in tqdm(range(num_angles + 1), desc=f"Generating 360 Degree of View for LOD {d}"):
                 log_metric_to_wandb(f"LOD-{d}-360-Degree-Scene/step", idx, step=idx)
