@@ -48,6 +48,7 @@ class MultiviewTrainer(BaseTrainer):
         """
         super().init_log_dict()
         self.log_dict['rgb_loss'] = 0.0
+        self.log_dict['lr'] = self.optimizer.param_groups[0]['lr']
 
     @torch.cuda.nvtx.range("MultiviewTrainer.step")
     def step(self, data):
@@ -92,7 +93,8 @@ class MultiviewTrainer(BaseTrainer):
         log_text = 'EPOCH {}/{}'.format(self.epoch, self.max_epochs)
         log_text += ' | total loss: {:>.3E}'.format(self.log_dict['total_loss'] / len(self.train_data_loader))
         log_text += ' | rgb loss: {:>.3E}'.format(self.log_dict['rgb_loss'] / len(self.train_data_loader))
-        
+        log_text += ' | lr: {:>.4E}'.format(self.log_dict['lr'])
+
         log.info(log_text)
 
     def evaluate_metrics(self, dataset: MultiviewDataset, lod_idx, name=None, lpips_model=None):

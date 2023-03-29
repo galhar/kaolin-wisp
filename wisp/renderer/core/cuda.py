@@ -54,7 +54,7 @@ if not os.environ.get('ENABLE_PYCUDA') == '1':
         map_flags = cuda.CUgraphicsRegisterFlags.CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD
         register_result = cuda.cuGraphicsGLRegisterImage(image=image, target=target, Flags=map_flags)
         if register_result[0] != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError('Failed to register GL texture as a CUDA shared resource.')
+            raise RuntimeError('Failed to register GL texture as a CUDA shared resource. Error code: %s' % register_result[0])
         resource_handle = register_result[1]
         return resource_handle
 

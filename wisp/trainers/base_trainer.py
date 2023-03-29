@@ -22,12 +22,12 @@ import wandb
 import numpy as np
 
 
-def log_metric_to_wandb(key, _object, step):
-    wandb.log({key: _object}, step=step, commit=False)
+def log_metric_to_wandb(key, _object, step=None, commit=False):
+    wandb.log({key: _object}, step=step, commit=commit)
 
 
-def log_images_to_wandb(key, image, step):
-    wandb.log({key: wandb.Image(np.moveaxis(image, 0, -1))}, step=step, commit=False)
+def log_images_to_wandb(key, image, step=None, commit=False):
+    wandb.log({key: wandb.Image(np.moveaxis(image, 0, -1))}, step=step, commit=commit)
 
 
 class BaseTrainer(ABC):
@@ -135,7 +135,7 @@ class BaseTrainer(ABC):
         self.grid_lr_weight = grid_lr_weight
         self.optim_params = optim_params
         self.lr_scheduler_cls = torch.optim.lr_scheduler.StepLR
-        self.lr_scheduler_params = {'gamma': 0.33, 'step_size': 5}
+        self.lr_scheduler_params = {'gamma': 0.33, 'step_size': 50}
         self.init_optimizer()
 
 
@@ -465,6 +465,9 @@ class BaseTrainer(ABC):
         if self.save_every > -1 and self.epoch % self.save_every == 0 and self.epoch != 0:
             self.save_model()
 
+        if self.using_wandb:
+            log_metric_to_wandb('loss/epoch', self.epoch, commit=True)
+
     def pre_step(self):
         """
         Override this function to change the pre-step preprocessing (runs per iteration).
@@ -520,7 +523,7 @@ class BaseTrainer(ABC):
         Override this function to change loss / other numeric logging to TensorBoard / Wandb.
         """
         for key in self.log_dict:
-            if 'loss' in key:
+            if 'loss' in key or key == 'lr':
                 self.writer.add_scalar(f'loss/{key}', self.log_dict[key] / len(self.train_data_loader), self.epoch)
                 if self.using_wandb:
                     log_metric_to_wandb(f'loss/{key}', self.log_dict[key] / len(self.train_data_loader), self.epoch)
