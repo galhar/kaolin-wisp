@@ -62,7 +62,7 @@ class MultiviewBatch(Batch):
                     each ray intersects.
                 *args, **kwargs - may specify any additional channels of information a ray or view can carry.
         """
-        super().__init__(rays=rays, cameras=cameras, rgb=rgb)
+        super().__init__(rays=rays, cameras=cameras, rgb=rgb, *args, **kwargs)
 
     def ray_values(self) -> Dict[str, Any]:
         """ Specifies a dictionary of the ray specific supervision channels this MultiviewBatch carries. """
@@ -70,6 +70,26 @@ class MultiviewBatch(Batch):
         if self['rgb'] is not None:
             out['rgb'] = self['rgb']
         return out
+
+
+class MultiviewBatchWithColmap(MultiviewBatch):
+    def __init__(self,
+                 rays: Rays,
+                 gt_depth,
+                 cameras: Optional[List[Camera]] = None,
+                 rgb: Optional[torch.Tensor] = None,    # RGB is default for convenience, but not mandatory
+                 *args, **kwargs):
+        super().__init__(rays=rays, cameras=cameras, rgb=rgb, gt_depth=gt_depth, *args, **kwargs)
+
+    def ray_values(self) -> Dict[str, Any]:
+        """ Specifies a dictionary of the ray specific supervision channels this MultiviewBatch carries. """
+        out = dict()
+        if self['rgb'] is not None:
+            out['rgb'] = self['rgb']
+        if self['gt_depth'] is not None:
+            out['gt_depth'] = self['gt_depth']
+        return out
+
 
 
 class SDFBatch(Batch):

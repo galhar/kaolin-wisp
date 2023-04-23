@@ -71,7 +71,9 @@ def get_activation_class(activation_type):
     elif activation_type == 'minmax':
         return MinMax()
     elif activation_type == 'relu':
-        return torch.relu
+        return torch.nn.functional.relu
+    elif activation_type == 'leaky_relu':
+        return torch.nn.functional.leaky_relu
     elif activation_type == 'sin':
         return torch.sin
     else:

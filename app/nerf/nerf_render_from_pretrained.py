@@ -73,7 +73,7 @@ def parse_args():
                                  'For a 3D grid structure, linear uses trilinear interpolation of 8 cell nodes,'
                                  'closest uses the nearest neighbor.')
     grid_group.add_argument('--blas-type', type=str, default='octree',  # TODO(operel)
-                            choices=['octree',],
+                            choices=['octree', ],
                             help='Type of acceleration structure to use for fast raymarch occupancy queries.')
     grid_group.add_argument('--multiscale-type', type=str, default='sum', choices=['sum', 'cat'],
                             help='Aggregation of choice for multi-level grids, for features from different LODs.')
@@ -169,11 +169,11 @@ def parse_args():
     trainer_group.add_argument('--grow-every', type=int, default=-1,
                                help='Grow network every X epochs')
     trainer_group.add_argument('--growth-strategy', type=str, default='increase',
-                               choices=['onebyone',      # One by one trains one level at a time.
-                                        'increase',      # Increase starts from [0] and ends up at [0,...,N]
-                                        'shrink',        # Shrink strats from [0,...,N] and ends up at [N]
+                               choices=['onebyone',  # One by one trains one level at a time.
+                                        'increase',  # Increase starts from [0] and ends up at [0,...,N]
+                                        'shrink',  # Shrink strats from [0,...,N] and ends up at [N]
                                         'finetocoarse',  # Fine to coarse starts from [N] and ends up at [0,...,N]
-                                        'onlylast'],     # Only last starts and ends at [N]
+                                        'onlylast'],  # Only last starts and ends at [N]
                                help='Strategy for coarse-to-fine training')
     trainer_group.add_argument('--valid-only', action='store_true',
                                help='Run validation only (and do not run training).')
@@ -207,7 +207,7 @@ def parse_args():
     optimizer_group.add_argument('--grid-lr-weight', type=float, default=100.0,
                                  help='Relative learning rate weighting applied only for the grid parameters'
                                       '(e.g. parameters which contain "grid" in their name)')
-    optimizer_group.add_argument('--rgb-loss-lambda', type=float, default=1.0,
+    optimizer_group.add_argument('--rgb-loss', type=float, default=1.0,
                                  help='Weight of rgb loss')
 
     # Evaluation renderer (definitions do not affect interactive renderer)
@@ -245,7 +245,7 @@ def load_dataset(args) -> MultiviewDataset:
             This dataset includes depth information which allows for performance improving optimizations in some cases.
     """
     transform = SampleRays(num_samples=args.num_rays_sampled_per_img)
-    train_dataset = wisp.datasets.NeRFSyntheticDataset(dataset_path=args.dataset_path,
+    train_dataset = wisp.datasets.load_multiview_dataset(dataset_path=args.dataset_path,
                                                          split='train',
                                                          mip=args.mip,
                                                          bg_color=args.bg_color,
@@ -373,8 +373,8 @@ def load_neural_field(args, dataset: MultiviewDataset) -> BaseNeuralField:
         layer_type=args.layer_type,
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
-        prune_density_decay=args.prune_density_decay,   # Used only for grid types which support pruning
-        prune_min_density=args.prune_min_density        # Used only for grid types which support pruning
+        prune_density_decay=args.prune_density_decay,  # Used only for grid types which support pruning
+        prune_min_density=args.prune_min_density  # Used only for grid types which support pruning
     )
     return nef
 
@@ -390,8 +390,8 @@ def load_tracer(args) -> BaseTracer:
     grid to generate samples and decode them to pixel values.
     """
     tracer = PackedRFTracer(
-        raymarch_type=args.raymarch_type,   # Chooses the ray-marching algorithm
-        num_steps=args.num_steps,           # Number of steps depends on raymarch_type
+        raymarch_type=args.raymarch_type,  # Chooses the ray-marching algorithm
+        num_steps=args.num_steps,  # Number of steps depends on raymarch_type
         bg_color=args.bg_color
     )
     return tracer
@@ -471,17 +471,14 @@ def is_interactive() -> bool:
     """ Returns True if interactive mode with gui is on, False is HEADLESS mode is forced """
     return os.environ.get('WISP_HEADLESS') != '1'
 
+
 if __name__ == '__main__':
     insert_args_to_cli = [
-        '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_2_views/',
-        '--config',  'app/nerf/configs/nerf_hash.yaml',
-        '--wandb-project', 'wisp_playing',
-        '--wandb-run-name', '2_views_dont_prune',
-        '--wandb-viz-nerf-distance', '2',
-        '--epochs', '200',
-        '--num-rays-sampled-per-img', '8192',
-        '--valid-every', '30',
-        '--prune-every', '10000'
+        '--dataset-path /home/galharari/datasets/nerf_llff_data/fern_try_colmap/',
+        '--config app/nerf/configs/nerf_hash.yaml',
+        '--wandb-project wisp_playing',
+        '--wandb-viz-nerf-distance 2',
+        '--pretrained _results/logs/runs/test-nerf/20230209-232641/model.pth'
     ]
     for arg_to_add in insert_args_to_cli:
         if arg_to_add.split(' ')[0] in sys.argv:
@@ -491,19 +488,33 @@ if __name__ == '__main__':
     default_log_setup(args.log_level)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # Load Everything
     train_dataset, validation_dataset = load_dataset(args=args)
     pipeline = load_neural_pipeline(args=args, dataset=train_dataset, device=device)
-    scene_state = WispState()   # Joint trainer / app state
+    scene_state = WispState()  # Joint trainer / app state
     trainer = load_trainer(pipeline=pipeline,
                            train_dataset=train_dataset, validation_dataset=validation_dataset,
                            device=device, scene_state=scene_state,
                            args=args, args_dict=args_dict)
-    app = load_app(args=args, scene_state=scene_state, trainer=trainer)
 
-    if app is not None:
-        app.run()  # Run in interactive mode
-    else:
-        if args.valid_only:
-            trainer.validate()
-        else:
-            trainer.train()
+    # Now render
+    trainer.pipeline.eval()
+    logging.info("Beginning rendering...")
+    img_shape = trainer.train_dataset.img_shape
+    logging.info(f"Running rendering on dataset with {len(trainer.train_dataset)} images "
+             f"at resolution {img_shape[0]}x{img_shape[1]}")
+
+    trainer.valid_log_dir = os.path.join(trainer.log_dir, "lego_5_views_train_feature_2d_renders")
+    logging.info(f"Saving rendering result to {trainer.valid_log_dir}")
+    if not os.path.exists(trainer.valid_log_dir):
+        os.makedirs(trainer.valid_log_dir)
+
+    lods = list(range(trainer.pipeline.nef.grid.num_lods))
+
+    pips_model = None
+    dataset = trainer.train_dataset
+    lod_idx = lods[-1]
+    name = f"lod{lods[-1]}"
+
+    img_count = len(dataset)
+    img_shape = dataset.img_shape
