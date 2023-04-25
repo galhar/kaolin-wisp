@@ -7,5 +7,5 @@
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
 from .base_trainer import BaseTrainer, log_metric_to_wandb, log_images_to_wandb
-from .multiview_trainer import MultiviewTrainer
+from .multiview_trainer import MultiviewTrainer, MultiviewWithSparseDepthGtTrainer
 from .sdf_trainer import SDFTrainer
