@@ -135,7 +135,7 @@ class BaseTrainer(ABC):
         self.grid_lr_weight = grid_lr_weight
         self.optim_params = optim_params
         self.lr_scheduler_cls = torch.optim.lr_scheduler.StepLR
-        self.lr_scheduler_params = {'gamma': 0.33, 'step_size': 50}
+        self.lr_scheduler_params = {'gamma': 0.33, 'step_size': 70}
         self.init_optimizer()
 
 

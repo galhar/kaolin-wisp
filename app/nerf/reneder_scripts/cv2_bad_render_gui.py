@@ -8,21 +8,29 @@
 
 
 import os
-import sys
 import argparse
 import logging
+import sys
+
+import cv2
 import numpy as np
 import torch
+from PIL.Image import Image
+from tqdm import tqdm
+from wisp.core import RenderBuffer
+
 import wisp
 from wisp.app_utils import default_log_setup, args_to_log_format
 import wisp.config_parser as config_parser
 from wisp.framework import WispState
-from wisp.datasets import MultiviewDataset, SampleRays
+from wisp.datasets import MultiviewDataset, SampleRays, SampleRaysWithSparseChannel, MultiviewBatch
 from wisp.models.grids import BLASGrid, OctreeGrid, CodebookOctreeGrid, TriplanarGrid, HashGrid
+from wisp.ops.image import write_png
 from wisp.tracers import BaseTracer, PackedRFTracer
 from wisp.models.nefs import BaseNeuralField, NeuralRadianceField
 from wisp.models.pipeline import Pipeline
-from wisp.trainers import BaseTrainer, MultiviewTrainer
+from wisp.trainers import BaseTrainer, MultiviewTrainer, log_metric_to_wandb, log_images_to_wandb
+from wisp.trainers.multiview_trainer import MultiviewWithSparseDepthGtTrainer
 
 
 def parse_args():
@@ -55,12 +63,17 @@ def parse_args():
                             help='Number of workers for dataloader.')
     data_group.add_argument('--bg-color', default='black' if is_interactive() else 'white',
                             choices=['white', 'black'], help='Background color')
-    data_group.add_argument('--multiview-dataset-format', default='standard', choices=['standard', 'rtmv'],
+    data_group.add_argument('--multiview-dataset-format', default='standard', choices=['standard', 'standard_with_colmap', 'rtmv'],
                             help='Data format for the transforms')
     data_group.add_argument('--num-rays-sampled-per-img', type=int, default='4096',
                             help='Number of rays to sample per image')
+    data_group.add_argument('--force-rgb-random', action='store_true', default=False,
+                            help='When sampling the rays and depth gt rays, do not use the rgb of the non-randomly'
+                                 ' sampled depth gt rays')
     data_group.add_argument('--mip', type=int, default=None,
                             help='MIP level of ground truth image')
+    data_group.add_argument('--colmap-results-path', type=str, default=None,
+                            help='path to the results of COLMAP over the dataset')
 
     grid_group = parser.add_argument_group('grid')
     grid_group.add_argument('--grid-type', type=str, default='OctreeGrid',
@@ -73,7 +86,7 @@ def parse_args():
                                  'For a 3D grid structure, linear uses trilinear interpolation of 8 cell nodes,'
                                  'closest uses the nearest neighbor.')
     grid_group.add_argument('--blas-type', type=str, default='octree',  # TODO(operel)
-                            choices=['octree', ],
+                            choices=['octree',],
                             help='Type of acceleration structure to use for fast raymarch occupancy queries.')
     grid_group.add_argument('--multiscale-type', type=str, default='sum', choices=['sum', 'cat'],
                             help='Aggregation of choice for multi-level grids, for features from different LODs.')
@@ -126,7 +139,7 @@ def parse_args():
     nef_group.add_argument('--layer-type', type=str, default='none',
                            choices=['none', 'spectral_norm', 'frobenius_norm', 'l_1_norm', 'l_inf_norm'])
     nef_group.add_argument('--activation-type', type=str, default='relu',
-                           choices=['relu', 'sin'])
+                           choices=['relu', 'sin', 'leaky_relu'])
     nef_group.add_argument('--hidden-dim', type=int, help='MLP Decoder of neural field: width of all hidden layers.')
     nef_group.add_argument('--num-layers', type=int, help='MLP Decoder of neural field: number of hidden layers.')
 
@@ -144,6 +157,8 @@ def parse_args():
                                help='Number of epochs to run the training.')
     trainer_group.add_argument('--batch-size', type=int, default=512,
                                help='Batch size for the training.')
+    trainer_group.add_argument('--disable-amp', action='store_true',
+                               help='Disabling the mixed precision training.')
     trainer_group.add_argument('--resample', action='store_true',
                                help='Resample the dataset after every epoch.')
     trainer_group.add_argument('--only-last', action='store_true',
@@ -169,11 +184,11 @@ def parse_args():
     trainer_group.add_argument('--grow-every', type=int, default=-1,
                                help='Grow network every X epochs')
     trainer_group.add_argument('--growth-strategy', type=str, default='increase',
-                               choices=['onebyone',  # One by one trains one level at a time.
-                                        'increase',  # Increase starts from [0] and ends up at [0,...,N]
-                                        'shrink',  # Shrink strats from [0,...,N] and ends up at [N]
+                               choices=['onebyone',      # One by one trains one level at a time.
+                                        'increase',      # Increase starts from [0] and ends up at [0,...,N]
+                                        'shrink',        # Shrink strats from [0,...,N] and ends up at [N]
                                         'finetocoarse',  # Fine to coarse starts from [N] and ends up at [0,...,N]
-                                        'onlylast'],  # Only last starts and ends at [N]
+                                        'onlylast'],     # Only last starts and ends at [N]
                                help='Strategy for coarse-to-fine training')
     trainer_group.add_argument('--valid-only', action='store_true',
                                help='Run validation only (and do not run training).')
@@ -207,7 +222,9 @@ def parse_args():
     optimizer_group.add_argument('--grid-lr-weight', type=float, default=100.0,
                                  help='Relative learning rate weighting applied only for the grid parameters'
                                       '(e.g. parameters which contain "grid" in their name)')
-    optimizer_group.add_argument('--rgb-loss', type=float, default=1.0,
+    optimizer_group.add_argument('--rgb-loss-lambda', type=float, default=1.0,
+                                 help='Weight of rgb loss')
+    optimizer_group.add_argument('--depth-loss-lambda', type=float, default=0.,
                                  help='Weight of rgb loss')
 
     # Evaluation renderer (definitions do not affect interactive renderer)
@@ -244,8 +261,9 @@ def load_dataset(args) -> MultiviewDataset:
             "RTMV: A Ray-Traced Multi-View Synthetic Dataset for Novel View Synthesis".
             This dataset includes depth information which allows for performance improving optimizations in some cases.
     """
-    transform = SampleRays(num_samples=args.num_rays_sampled_per_img)
-    train_dataset = wisp.datasets.load_multiview_dataset(dataset_path=args.dataset_path,
+    transform = SampleRaysWithSparseChannel(num_samples=args.num_rays_sampled_per_img, sparse_channel='gt_depth', force_rgb_random=args.force_rgb_random)
+    train_dataset = wisp.datasets.NeRFSyntheticDatasetWithCOLMAP(dataset_path=args.dataset_path,
+                                                         colmap_res_path=args.colmap_results_path,
                                                          split='train',
                                                          mip=args.mip,
                                                          bg_color=args.bg_color,
@@ -292,7 +310,7 @@ def load_grid(args, dataset: MultiviewDataset) -> BLASGrid:
                 feature_bias=args.feature_bias,
             )
     elif args.grid_type == "CodebookOctreeGrid":
-        if dataset.supports_depth():
+        if dataset.supports_depth:
             grid = CodebookOctreeGrid.from_pointcloud(
                 pointcloud=dataset.as_pointcloud(),
                 feature_dim=args.feature_dim,
@@ -373,8 +391,8 @@ def load_neural_field(args, dataset: MultiviewDataset) -> BaseNeuralField:
         layer_type=args.layer_type,
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
-        prune_density_decay=args.prune_density_decay,  # Used only for grid types which support pruning
-        prune_min_density=args.prune_min_density  # Used only for grid types which support pruning
+        prune_density_decay=args.prune_density_decay,   # Used only for grid types which support pruning
+        prune_min_density=args.prune_min_density        # Used only for grid types which support pruning
     )
     return nef
 
@@ -390,8 +408,8 @@ def load_tracer(args) -> BaseTracer:
     grid to generate samples and decode them to pixel values.
     """
     tracer = PackedRFTracer(
-        raymarch_type=args.raymarch_type,  # Chooses the ray-marching algorithm
-        num_steps=args.num_steps,  # Number of steps depends on raymarch_type
+        raymarch_type=args.raymarch_type,   # Chooses the ray-marching algorithm
+        num_steps=args.num_steps,           # Number of steps depends on raymarch_type
         bg_color=args.bg_color
     )
     return tracer
@@ -427,7 +445,7 @@ def load_trainer(pipeline, train_dataset, validation_dataset, device, scene_stat
     optimizer_cls = config_parser.get_module(name=args.optimizer_type)
     optimizer_params = config_parser.get_args_for_function(args, optimizer_cls)
 
-    trainer = MultiviewTrainer(pipeline=pipeline,
+    trainer = MultiviewWithSparseDepthGtTrainer(pipeline=pipeline,
                                train_dataset=train_dataset,
                                validation_dataset=validation_dataset,
                                num_epochs=args.epochs,
@@ -439,14 +457,15 @@ def load_trainer(pipeline, train_dataset, validation_dataset, device, scene_stat
                                optim_params=optimizer_params,
                                log_dir=args.log_dir,
                                device=device,
-                               exp_name=args.exp_name,
+                               exp_name=args.wandb_run_name if args.wandb_run_name is not None else args.exp_name,
                                info=args_to_log_format(args_dict),
                                extra_args=vars(args),
                                render_tb_every=args.render_tb_every,
                                save_every=args.save_every,
                                scene_state=scene_state,
                                trainer_mode='validate' if args.valid_only else 'train',
-                               using_wandb=args.wandb_project is not None)
+                               using_wandb=args.wandb_project is not None,
+                               enable_amp=not args.disable_amp)
     return trainer
 
 
@@ -471,14 +490,27 @@ def is_interactive() -> bool:
     """ Returns True if interactive mode with gui is on, False is HEADLESS mode is forced """
     return os.environ.get('WISP_HEADLESS') != '1'
 
-
 if __name__ == '__main__':
     insert_args_to_cli = [
-        '--dataset-path /home/galharari/datasets/nerf_llff_data/fern_try_colmap/',
-        '--config app/nerf/configs/nerf_hash.yaml',
-        '--wandb-project wisp_playing',
-        '--wandb-viz-nerf-distance 2',
-        '--pretrained _results/logs/runs/test-nerf/20230209-232641/model.pth'
+        '--dataset-path', '/mnt/more_space/datasets/nerf_llff_data/fern_in_nerf_format_2_views/',
+        # '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_2_views/',
+        '--config', 'app/nerf/configs/nerf_hash.yaml',
+        '--wandb-project', 'wisp_playing',
+        '--wandb-run-name', 'reg_prune_with_depthloss',
+        '--wandb-viz-nerf-distance', '2',
+        '--epochs', '150',
+        '--num-rays-sampled-per-img', '8192',
+        '--multiview-dataset-format', 'standard_with_colmap',
+        '--colmap-results-path', '/mnt/more_space/datasets/nerf_llff_data/fern',
+        # '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
+        '--depth-loss-lambda', '0.2',
+        '--force-rgb-random',
+        '--valid-every', '30',
+        '--prune-every', '20',
+        '--exp-name', 'debug_loss',
+        '--activation-type', 'leaky_relu',
+        '--disable-amp',
+        '--pretrained', '_results/logs/runs/reg_prune_with_depthloss/20230425-194307/model.pth'
     ]
     for arg_to_add in insert_args_to_cli:
         if arg_to_add.split(' ')[0] in sys.argv:
@@ -488,33 +520,65 @@ if __name__ == '__main__':
     default_log_setup(args.log_level)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Load Everything
     train_dataset, validation_dataset = load_dataset(args=args)
-    pipeline = load_neural_pipeline(args=args, dataset=train_dataset, device=device)
-    scene_state = WispState()  # Joint trainer / app state
+    pipeline = torch.load(args.pretrained)
+    scene_state = WispState()   # Joint trainer / app state
     trainer = load_trainer(pipeline=pipeline,
-                           train_dataset=train_dataset, validation_dataset=validation_dataset,
+                           train_dataset=train_dataset, validation_dataset=None,
                            device=device, scene_state=scene_state,
                            args=args, args_dict=args_dict)
+    app = load_app(args=args, scene_state=scene_state, trainer=trainer)
+    app.run()
 
-    # Now render
-    trainer.pipeline.eval()
-    logging.info("Beginning rendering...")
-    img_shape = trainer.train_dataset.img_shape
-    logging.info(f"Running rendering on dataset with {len(trainer.train_dataset)} images "
-             f"at resolution {img_shape[0]}x{img_shape[1]}")
+    num_angles = 50
+    camera_distance = 2.5
 
-    trainer.valid_log_dir = os.path.join(trainer.log_dir, "lego_5_views_train_feature_2d_renders")
-    logging.info(f"Saving rendering result to {trainer.valid_log_dir}")
-    if not os.path.exists(trainer.valid_log_dir):
-        os.makedirs(trainer.valid_log_dir)
+    angles = np.pi * 0.1 * np.array(list(range(num_angles + 1)))
+    x = -camera_distance * np.sin(angles)
+    y = trainer.extra_args["camera_origin"][1]
+    z = -camera_distance * np.cos(angles)
+    num_lods = 1  # self.gridself.extra_args["num_lods"] # In hasgrid all lods here aer the same
+    idx = int(3 * num_angles / 6)
+    for d in range(num_lods):
+        out_rgb = []
+        while True:
+            out = trainer.renderer.shade_images(
+                trainer.pipeline,
+                f=[x[idx], y, z[idx]],
+                t=trainer.extra_args["camera_lookat"],
+                fov=trainer.extra_args["camera_fov"],
+                lod_idx=d,
+                camera_clamp=trainer.extra_args["camera_clamp"]
+            )
+            out = out.image().byte().numpy_dict()
 
-    lods = list(range(trainer.pipeline.nef.grid.num_lods))
+            cv2.imshow('rendered_rgb',out['rgb'].transpose((1,0,2)))
+            # cv2.imshow('rendered_depth',out['depth'])
 
-    pips_model = None
-    dataset = trainer.train_dataset
-    lod_idx = lods[-1]
-    name = f"lod{lods[-1]}"
+            ret_key = cv2.waitKey(0)
 
-    img_count = len(dataset)
-    img_shape = dataset.img_shape
+            if ret_key == ord('d'):
+                # Right
+                print('Right')
+                idx = (idx - 1) % num_angles
+
+            elif ret_key == ord('a'):
+                # Left
+                print('Left')
+                idx = (idx + 1) % num_angles
+            elif ret_key == ord('i'):
+                print('Zoom in')
+                camera_distance -= 0.25
+                x = -camera_distance * np.sin(angles)
+                y = trainer.extra_args["camera_origin"][1]
+                z = -camera_distance * np.cos(angles)
+            elif ret_key == ord('o'):
+                print('Zoom out')
+                camera_distance += 0.25
+                x = -camera_distance * np.sin(angles)
+                y = trainer.extra_args["camera_origin"][1]
+                z = -camera_distance * np.cos(angles)
+            elif ret_key == ord('q'):
+                exit()
+
+            print(ret_key, idx, camera_distance)
