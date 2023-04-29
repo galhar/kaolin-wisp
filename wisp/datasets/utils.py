@@ -139,7 +139,7 @@ def default_collate(batch):
             numel = sum(x.numel() for x in batch)
             storage = elem.storage()._new_shared(numel, device=elem.device)
             out = elem.new(storage).resize_(len(batch), *list(elem.size()))
-        return torch.stack(batch, 0, out=out)
+        return torch.stack(batch, 0, out=out).reshape((-1,batch[0].shape[-1]))
     elif elem_type.__module__ == 'numpy' and elem_type.__name__ != 'str_' \
             and elem_type.__name__ != 'string_':
         if elem_type.__name__ == 'ndarray' or elem_type.__name__ == 'memmap':
