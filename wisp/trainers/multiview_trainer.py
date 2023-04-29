@@ -16,7 +16,7 @@ import torch
 from wisp.trainers import BaseTrainer, log_metric_to_wandb, log_images_to_wandb
 from wisp.ops.image import write_png, write_exr
 from wisp.ops.image.metrics import psnr, lpips, ssim
-from wisp.datasets import MultiviewDataset
+from wisp.datasets import MultiviewDataset, WispDataset
 from wisp.core import Rays, RenderBuffer
 
 import wandb
@@ -276,6 +276,19 @@ class MultiviewTrainer(BaseTrainer):
 
 class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
 
+    def __init__(self, pipeline, train_dataset: WispDataset, num_epochs, batch_size,
+                 optim_cls, lr, weight_decay, grid_lr_weight, optim_params, log_dir, device,
+                 exp_name=None, info=None, scene_state=None, extra_args=None, validation_dataset: WispDataset = None,
+                 render_tb_every=-1, save_every=-1, trainer_mode='validate', using_wandb=False,
+                 enable_amp=True, relative_depth_loss=True):
+        super().__init__(pipeline, train_dataset, num_epochs, batch_size,
+                 optim_cls, lr, weight_decay, grid_lr_weight, optim_params, log_dir, device,
+                 exp_name, info, scene_state, extra_args, validation_dataset ,
+                 render_tb_every, save_every, trainer_mode, using_wandb,
+                 enable_amp)
+        self.relative_depth_loss = relative_depth_loss
+
+
     def populate_scenegraph(self):
         """ Updates the scenegraph with information about available objects.
         Doing so exposes these objects to other components, like visualizers and loggers.
@@ -334,7 +347,10 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         rgb_loss = rgb_loss.mean()
 
         depth_gt_idx = ~depth_gts.isnan()
-        depth_loss = (rb.depth[depth_gt_idx] - depth_gts[depth_gt_idx])**2 * depth_gts_error[depth_gt_idx]
+        if self.relative_depth_loss:
+            depth_loss = (rb.depth[depth_gt_idx] - depth_gts[depth_gt_idx])**2 * depth_gts_error[depth_gt_idx]
+        else:
+            depth_loss = (rb.depth[depth_gt_idx] - depth_gts[depth_gt_idx]) ** 2
         depth_loss = depth_loss.mean()
 
         loss += self.extra_args["rgb_loss_lambda"] * rgb_loss + self.extra_args["depth_loss_lambda"] * depth_loss

@@ -124,14 +124,15 @@ class WispApp(ABC):
         self.cugl_rgb_handle = None                              # CUDA buffer, as a shared resource with OpenGL
         self.cugl_depth_handle = None
 
-        try:
-            # WSL does not support CUDA-OpenGL interoperability, fallback to device2host2device copy instead
-            from platform import uname
-            is_wsl = 'microsoft-standard' in uname().release
-            self.blitdevice2device = not is_wsl
-        except Exception:
-            # By default rendering results copy directly from torch/cuda mem to OpenGL Texture
-            self.blitdevice2device = True
+        # try:
+        #     # WSL does not support CUDA-OpenGL interoperability, fallback to device2host2device copy instead
+        #     from platform import uname
+        #     is_wsl = 'microsoft-standard' in uname().release
+        #     self.blitdevice2device = not is_wsl
+        # except Exception:
+        #     # By default rendering results copy directly from torch/cuda mem to OpenGL Texture
+        #     self.blitdevice2device = True
+        self.blitdevice2device = False
 
         self.user_mode: CameraControlMode = None    # Camera controller object (first person, trackball or turntable)
 
