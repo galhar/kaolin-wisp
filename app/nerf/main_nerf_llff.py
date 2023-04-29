@@ -498,12 +498,12 @@ if __name__ == '__main__':
         '--num-rays-sampled-per-img', '8192',
         '--multiview-dataset-format', 'standard_with_colmap',
         '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
-        '--depth-loss-lambda', '0.2',
+        '--depth-loss-lambda', '0.15',
         '--force-rgb-random',
         '--valid-every', '30',
         '--prune-every', '20',
         '--exp-name', 'debug_loss',
-        '--activation-type', 'leaky_relu',
+        '--activation-type', 'relu',
         '--relative-depth-loss'
     ]
     for arg_to_add in insert_args_to_cli:
