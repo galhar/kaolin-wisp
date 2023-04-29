@@ -489,16 +489,16 @@ def is_interactive() -> bool:
 
 if __name__ == '__main__':
     insert_args_to_cli = [
-        '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_2_views/',
+        '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_5_views/',
         '--config', 'app/nerf/configs/nerf_hash.yaml',
         '--wandb-project', 'wisp_playing',
-        '--wandb-run-name', 'reg_prune_non_relative_depthloss',
+        '--wandb-run-name', '5_views',
         '--wandb-viz-nerf-distance', '2',
         '--epochs', '150',
         '--num-rays-sampled-per-img', '8192',
         '--multiview-dataset-format', 'standard_with_colmap',
         '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
-        '--depth-loss-lambda', '0.07',
+        '--depth-loss-lambda', '0.2',
         '--force-rgb-random',
         '--valid-every', '30',
         '--prune-every', '20',
