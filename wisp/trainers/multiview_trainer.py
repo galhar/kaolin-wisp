@@ -423,6 +423,20 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
                         log.info("Skipping EXR logging since pyexr is not found.")
                 write_png(os.path.join(self.valid_log_dir, out_name + ".png"), rb.cpu().image().byte().rgb)
 
+                # Log to wandb the validation images results
+                if self.extra_args['log_validation_image'] and idx == 0:
+                    out_rb = out_rb.reshape(*img_shape, -1).cpu().image().byte().numpy_dict()
+                    if out_rb.get('rgb') is not None:
+                        log_images_to_wandb(f"Validation/RGB", out_rb['rgb'].transpose((2,0,1)), idx)
+                    if out_rb.get('rgba') is not None:
+                        log_images_to_wandb(f"Validation/RGBA", out_rb['rgba'].transpose((2,0,1)), idx)
+                    if out_rb.get('depth') is not None:
+                        log_images_to_wandb(f"Validation/Depth", out_rb['depth'].transpose((2,0,1)), idx)
+                    if out_rb.get('normal') is not None:
+                        log_images_to_wandb(f"Validation/Normal", out_rb['normal'].transpose((2,0,1)), idx)
+                    if out_rb.get('alpha') is not None:
+                        log_images_to_wandb(f"Validation/Alpha", out_rb['alpha'].transpose((2,0,1)), idx)
+
         psnr_total /= img_count
         lpips_total /= img_count
         ssim_total /= img_count

@@ -186,6 +186,8 @@ def parse_args():
                                help='Strategy for coarse-to-fine training')
     trainer_group.add_argument('--valid-only', action='store_true',
                                help='Run validation only (and do not run training).')
+    trainer_group.add_argument('--log-validation-image', action='store_true',
+                               help='Log the renders of a single validation image in the validation dashboard.')
     trainer_group.add_argument('--valid-every', type=int, default=-1,
                                help='Frequency of running validation.')
     trainer_group.add_argument('--random-lod', action='store_true',
@@ -492,18 +494,19 @@ if __name__ == '__main__':
         '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_5_views/',
         '--config', 'app/nerf/configs/nerf_hash.yaml',
         '--wandb-project', 'wisp_playing',
-        '--wandb-run-name', '5_views',
+        '--wandb-run-name', '5_views_low_depthloss',
         '--wandb-viz-nerf-distance', '2',
         '--epochs', '150',
         '--num-rays-sampled-per-img', '8192',
         '--multiview-dataset-format', 'standard_with_colmap',
         '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
-        '--depth-loss-lambda', '0.15',
+        '--depth-loss-lambda', '0.04',
         '--force-rgb-random',
         '--valid-every', '30',
         '--prune-every', '20',
         '--exp-name', 'debug_loss',
         '--activation-type', 'relu',
+        '--log-validation-image',
         '--relative-depth-loss'
     ]
     for arg_to_add in insert_args_to_cli:
