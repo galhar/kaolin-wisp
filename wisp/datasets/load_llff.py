@@ -350,12 +350,14 @@ def load_colmap_depth(basedir, factor=8, bd_factor=.75):
 
     data_dict = dict()
     for id_im in range(1, len(images) + 1):
+        cur_image = images[id_im]
         depth_list = []
         coord_list = []
+        point_3d_idx = []
         weight_list = []
-        for i in range(len(images[id_im].xys)):
-            point2D = images[id_im].xys[i]
-            id_3D = images[id_im].point3D_ids[i]
+        for i in range(len(cur_image.xys)):
+            point2D = cur_image.xys[i]
+            id_3D = cur_image.point3D_ids[i]
             if id_3D == -1:
                 continue
             point3D = points[id_3D].xyz
@@ -366,13 +368,15 @@ def load_colmap_depth(basedir, factor=8, bd_factor=.75):
             weight = 2 * np.exp(-(err / Err_mean) ** 2)
             depth_list.append(depth)
             coord_list.append(np.array(point2D / factor, dtype=int))
+            point_3d_idx.append(id_3D)
             weight_list.append(weight)
         if len(depth_list) > 0:
-            cur_img_name = images[id_im].name.split('.')[0]
+            cur_img_name = cur_image.name.split('.')[0]
             print(id_im, cur_img_name, len(depth_list), np.min(depth_list), np.max(depth_list), np.mean(depth_list))
             data_dict[cur_img_name] = {
                 "depth": np.array(depth_list),
                 "coord": np.array(coord_list),
+                "point3d_idx": np.array(point_3d_idx),
                 "error": np.array(weight_list)}
         else:
             print(id_im, len(depth_list))
@@ -515,16 +519,16 @@ def load_colmap_llff(basedir):
 
 
 if __name__ == '__main__':
-    data_dict = load_colmap_depth('/home/galharari/datasets/nerf_llff_data/fern')
+    # data_dict, near, far = load_colmap_depth('/home/galharari/datasets/nerf_llff_data/fern')
+    #
+    # depth_gt_sparse = torch.full((10, 1000, 1000, 2), torch.nan)
+    # _coord = data_dict['IMG_4026.JPG']['coord']
+    # _depth = data_dict['IMG_4026.JPG']['depth']
+    # _weight = data_dict['IMG_4026.JPG']['error']
+    # gt_depth_and_error = np.stack([_depth, _weight], axis=1)
+    #
+    # depth_gt_sparse[(np.full((_coord.shape[0],), 1), _coord[:, 0], _coord[:, 1])] = torch.FloatTensor(
+    #     gt_depth_and_error)
 
-    depth_gt_sparse = torch.full((10, 1000, 1000, 2), torch.nan)
-    _coord = data_dict['IMG_4026.JPG']['coord']
-    _depth = data_dict['IMG_4026.JPG']['depth']
-    _weight = data_dict['IMG_4026.JPG']['error']
-    gt_depth_and_error = np.stack([_depth, _weight], axis=1)
-
-    depth_gt_sparse[(np.full((_coord.shape[0],), 1), _coord[:, 0], _coord[:, 1])] = torch.FloatTensor(
-        gt_depth_and_error)
-
-    datalist = load_2_images_matchpoints('/mnt/more_space/datasets/nerf_llff_data/fern/')
+    datalist = load_2_images_matchpoints('/mnt/more_space/datasets/nerf_llff_data/fern/', id_img_1=2, id_img_2=15)
     print(datalist)

@@ -322,7 +322,7 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         rays = data['rays'].to(self.device).squeeze(0)
         rgb_gts = data['rgb'].to(self.device).squeeze(0)
         depth_gts_data = data['gt_depth'].to(self.device).squeeze(0)
-        depth_gts, depth_gts_error = depth_gts_data[:,0 , None], depth_gts_data[:,1 , None]
+        depth_gts, depth_gts_error, point3d_idx = depth_gts_data[:,0 , None], depth_gts_data[:,1 , None], depth_gts_data[:,2 , None]
 
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -338,14 +338,14 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
             # Sample only the max lod (None is max lod by default)
             lod_idx = None
 
-        rb = self.pipeline(rays=rays, lod_idx=lod_idx, channels=["rgb", "depth"])
+        rb = self.pipeline(rays=rays, lod_idx=lod_idx, channels=["rgb", "depth", 'feats'])
 
         # RGB Loss
-        # rgb_loss = F.mse_loss(rb.rgb, rgb_gts, reduction='none')
         rgb_gt_idx = ~rgb_gts.isnan()
         rgb_loss = torch.abs(rb.rgb[rgb_gt_idx] - rgb_gts[rgb_gt_idx])
         rgb_loss = rgb_loss.mean()
 
+        # Depth Loss
         depth_gt_idx = ~depth_gts.isnan()
         if self.relative_depth_loss:
             depth_loss = (rb.depth[depth_gt_idx] - depth_gts[depth_gt_idx])**2 * depth_gts_error[depth_gt_idx]
@@ -353,9 +353,23 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
             depth_loss = (rb.depth[depth_gt_idx] - depth_gts[depth_gt_idx]) ** 2
         depth_loss = depth_loss.mean()
 
-        loss += self.extra_args["rgb_loss_lambda"] * rgb_loss + self.extra_args["depth_loss_lambda"] * depth_loss
+        # Features Similarity Loss
+        # feats_map = rb.feats
+        # vals, dups_idx = MultiviewWithSparseDepthGtTrainer.get_duplications_idx(point3d_idx.cpu().numpy()[:,0])
+        #
+        # # Note that the mean over the l2 between the features includes mean over some zeros,
+        # # since it has duplication of the same ray when the same depth ray was randomly sampled
+        # cos_sim = torch.nn.CosineSimilarity(dim=1,eps=1e-08)
+        # feats_cosine_similarity_loss = cos_sim(feats_map[dups_idx][:,0,:], rgb_gts[feats_map][:,1,:])
+        # feats_cosine_similarity_loss = feats_cosine_similarity_loss.mean()
+
+
+        loss += self.extra_args["rgb_loss_lambda"] * rgb_loss
+        loss += self.extra_args["depth_loss_lambda"] * depth_loss
+        # loss += self.extra_args["cosine_similarity_loss_lambda"] * feats_cosine_similarity_loss
         self.log_dict['rgb_loss'] += rgb_loss.item()
         self.log_dict['depth_loss'] += depth_loss.item()
+        # self.log_dict['cosine_similarity_loss'] += feats_cosine_similarity_loss.item()
 
         self.log_dict['total_loss'] += loss.item()
 
@@ -567,3 +581,31 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
                 camera_distance=wandb_viz_nerf_distance
             )
         super().post_training()
+
+    @staticmethod
+    def get_duplications_idx(arr: np.ndarray, only_doubles=True):
+        # creates an array of indices, sorted by unique element
+        idx_sort = np.argsort(arr)
+
+        # sorts records array so all unique elements are together
+        sorted_arr = arr[idx_sort]
+
+        # returns the unique values, the index of the first occurrence of a value, and the count for each element
+        vals, idx_start, count = np.unique(sorted_arr, return_counts=True, return_index=True)
+
+        # splits the indices into separate arrays
+        idxs_res = np.split(idx_sort, idx_start[1:])
+
+        # Filter out the idx of nans
+        nans_idx = np.isnan(vals)
+        nan_i = np.argwhere(nans_idx)
+
+        # filter them with respect to their size, keeping only items occurring more than once
+        size_filter = (count == 2) if only_doubles else (count > 1)
+        filtered_vals = vals[size_filter & (~nans_idx)]
+        filtered_enumerate_idx_res = filter(lambda enum_res: enum_res[1].size > 1
+                                                             and enum_res[0] != nan_i
+                                                             and (not only_doubles or enum_res[1].size == 2 ),
+                                            enumerate(idxs_res))
+        filtered_idx = list(map(lambda x: x[1], filtered_enumerate_idx_res))
+        return filtered_vals, filtered_idx

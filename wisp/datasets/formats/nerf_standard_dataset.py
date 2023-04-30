@@ -490,16 +490,7 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
         self.colmap_res_path = colmap_res_path
         super().__init__(dataset_path=dataset_path, dataset_num_workers=dataset_num_workers,
                          transform=transform, split=split, bg_color=bg_color, mip=mip)
-        # self.mip = mip
-        # self.bg_color = bg_color
-        #
-        #
-        # self.coords = self.data = self.coords_center = self.coords_scale = None
-        # self._transform_file = self._validate_and_find_transform()
-        # self.data = self.load()
-        #
-        # self._img_shape = self.data["rgb"].shape[1:3]
-        # self.flatten_tensors()
+
 
     def create_split(self, split: str, transform: Callable = None) -> NeRFSyntheticDataset:
         """ Creates a dataset with the same parameters and a different split.
@@ -790,13 +781,14 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
                 rgbs[... ,:3] += ( 1 -alpha)
                 rgbs = np.clip(rgbs, 0.0, 1.0)
 
-        colmap_depth_gt_sparse = torch.full((*rgbs.shape[:-1], 2), torch.nan,dtype=torch.float32)
+        colmap_depth_gt_sparse = torch.full((*rgbs.shape[:-1], 3), torch.nan,dtype=torch.float32)
 
         for i in range(imgs.shape[0]):
             _coord = colmap_depth_gt[i]['coord']
             _depth = colmap_depth_gt[i]['depth']
             _weight = colmap_depth_gt[i]['error']
-            gt_depth_and_error = np.stack([_depth, _weight], axis=1)
+            _point3d_idx = colmap_depth_gt[i]['point3d_idx']
+            gt_depth_and_error = np.stack([_depth, _weight, _point3d_idx], axis=1)
 
             colmap_depth_gt_sparse[
                 (
@@ -817,7 +809,7 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
         num_imgs = len(self)
         self.data["rgb"] = self.data["rgb"].reshape(num_imgs, -1, 3)
         self.data["rays"] = self.data["rays"].reshape(num_imgs, -1, 3)
-        self.data["gt_depth"] = self.data["gt_depth"].reshape(num_imgs, -1, 2)
+        self.data["gt_depth"] = self.data["gt_depth"].reshape(num_imgs, -1, 3)
         if "masks" in self.data:
             self.data["masks"] = self.data["masks"].reshape(num_imgs, -1, 1)
 

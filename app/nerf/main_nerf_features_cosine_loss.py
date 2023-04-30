@@ -8,21 +8,23 @@
 
 
 import os
-import sys
 import argparse
 import logging
+import sys
+
 import numpy as np
 import torch
 import wisp
 from wisp.app_utils import default_log_setup, args_to_log_format
 import wisp.config_parser as config_parser
 from wisp.framework import WispState
-from wisp.datasets import MultiviewDataset, SampleRays
+from wisp.datasets import MultiviewDataset, SampleRays, SampleRaysWithSparseChannel
 from wisp.models.grids import BLASGrid, OctreeGrid, CodebookOctreeGrid, TriplanarGrid, HashGrid
 from wisp.tracers import BaseTracer, PackedRFTracer
 from wisp.models.nefs import BaseNeuralField, NeuralRadianceField
 from wisp.models.pipeline import Pipeline
 from wisp.trainers import BaseTrainer, MultiviewTrainer
+from wisp.trainers.multiview_trainer import MultiviewWithSparseDepthGtTrainer
 
 
 def parse_args():
@@ -55,12 +57,17 @@ def parse_args():
                             help='Number of workers for dataloader.')
     data_group.add_argument('--bg-color', default='black' if is_interactive() else 'white',
                             choices=['white', 'black'], help='Background color')
-    data_group.add_argument('--multiview-dataset-format', default='standard', choices=['standard', 'rtmv'],
+    data_group.add_argument('--multiview-dataset-format', default='standard', choices=['standard', 'standard_with_colmap', 'rtmv'],
                             help='Data format for the transforms')
     data_group.add_argument('--num-rays-sampled-per-img', type=int, default='4096',
                             help='Number of rays to sample per image')
+    data_group.add_argument('--force-rgb-random', action='store_true', default=False,
+                            help='When sampling the rays and depth gt rays, do not use the rgb of the non-randomly'
+                                 ' sampled depth gt rays')
     data_group.add_argument('--mip', type=int, default=None,
                             help='MIP level of ground truth image')
+    data_group.add_argument('--colmap-results-path', type=str, default=None,
+                            help='path to the results of COLMAP over the dataset')
 
     grid_group = parser.add_argument_group('grid')
     grid_group.add_argument('--grid-type', type=str, default='OctreeGrid',
@@ -126,7 +133,7 @@ def parse_args():
     nef_group.add_argument('--layer-type', type=str, default='none',
                            choices=['none', 'spectral_norm', 'frobenius_norm', 'l_1_norm', 'l_inf_norm'])
     nef_group.add_argument('--activation-type', type=str, default='relu',
-                           choices=['relu', 'sin'])
+                           choices=['relu', 'sin', 'leaky_relu'])
     nef_group.add_argument('--hidden-dim', type=int, help='MLP Decoder of neural field: width of all hidden layers.')
     nef_group.add_argument('--num-layers', type=int, help='MLP Decoder of neural field: number of hidden layers.')
 
@@ -144,6 +151,8 @@ def parse_args():
                                help='Number of epochs to run the training.')
     trainer_group.add_argument('--batch-size', type=int, default=512,
                                help='Batch size for the training.')
+    trainer_group.add_argument('--disable-amp', action='store_true',
+                               help='Disabling the mixed precision training.')
     trainer_group.add_argument('--resample', action='store_true',
                                help='Resample the dataset after every epoch.')
     trainer_group.add_argument('--only-last', action='store_true',
@@ -177,6 +186,8 @@ def parse_args():
                                help='Strategy for coarse-to-fine training')
     trainer_group.add_argument('--valid-only', action='store_true',
                                help='Run validation only (and do not run training).')
+    trainer_group.add_argument('--log-validation-image', action='store_true',
+                               help='Log the renders of a single validation image in the validation dashboard.')
     trainer_group.add_argument('--valid-every', type=int, default=-1,
                                help='Frequency of running validation.')
     trainer_group.add_argument('--random-lod', action='store_true',
@@ -209,6 +220,10 @@ def parse_args():
                                       '(e.g. parameters which contain "grid" in their name)')
     optimizer_group.add_argument('--rgb-loss-lambda', type=float, default=1.0,
                                  help='Weight of rgb loss')
+    optimizer_group.add_argument('--depth-loss-lambda', type=float, default=0.,
+                                 help='Weight of rgb loss')
+    optimizer_group.add_argument('--relative-depth-loss', action='store_true',
+                                 help='Make depth loss weighted by the confidence of colmap')
 
     # Evaluation renderer (definitions do not affect interactive renderer)
     offline_renderer_group = parser.add_argument_group('renderer')
@@ -244,8 +259,9 @@ def load_dataset(args) -> MultiviewDataset:
             "RTMV: A Ray-Traced Multi-View Synthetic Dataset for Novel View Synthesis".
             This dataset includes depth information which allows for performance improving optimizations in some cases.
     """
-    transform = SampleRays(num_samples=args.num_rays_sampled_per_img)
-    train_dataset = wisp.datasets.NeRFSyntheticDataset(dataset_path=args.dataset_path,
+    transform = SampleRaysWithSparseChannel(num_samples=args.num_rays_sampled_per_img, sparse_channel='gt_depth', force_rgb_random=args.force_rgb_random)
+    train_dataset = wisp.datasets.NeRFSyntheticDatasetWithCOLMAP(dataset_path=args.dataset_path,
+                                                         colmap_res_path=args.colmap_results_path,
                                                          split='train',
                                                          mip=args.mip,
                                                          bg_color=args.bg_color,
@@ -292,7 +308,7 @@ def load_grid(args, dataset: MultiviewDataset) -> BLASGrid:
                 feature_bias=args.feature_bias,
             )
     elif args.grid_type == "CodebookOctreeGrid":
-        if dataset.supports_depth():
+        if dataset.supports_depth:
             grid = CodebookOctreeGrid.from_pointcloud(
                 pointcloud=dataset.as_pointcloud(),
                 feature_dim=args.feature_dim,
@@ -427,7 +443,7 @@ def load_trainer(pipeline, train_dataset, validation_dataset, device, scene_stat
     optimizer_cls = config_parser.get_module(name=args.optimizer_type)
     optimizer_params = config_parser.get_args_for_function(args, optimizer_cls)
 
-    trainer = MultiviewTrainer(pipeline=pipeline,
+    trainer = MultiviewWithSparseDepthGtTrainer(pipeline=pipeline,
                                train_dataset=train_dataset,
                                validation_dataset=validation_dataset,
                                num_epochs=args.epochs,
@@ -439,14 +455,16 @@ def load_trainer(pipeline, train_dataset, validation_dataset, device, scene_stat
                                optim_params=optimizer_params,
                                log_dir=args.log_dir,
                                device=device,
-                               exp_name=args.exp_name,
+                               exp_name=args.wandb_run_name if args.wandb_run_name is not None else args.exp_name,
                                info=args_to_log_format(args_dict),
                                extra_args=vars(args),
                                render_tb_every=args.render_tb_every,
                                save_every=args.save_every,
                                scene_state=scene_state,
                                trainer_mode='validate' if args.valid_only else 'train',
-                               using_wandb=args.wandb_project is not None)
+                               using_wandb=args.wandb_project is not None,
+                               enable_amp=not args.disable_amp,
+                               relative_depth_loss=args.relative_depth_loss)
     return trainer
 
 
@@ -474,16 +492,25 @@ def is_interactive() -> bool:
 if __name__ == '__main__':
     insert_args_to_cli = [
         '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_5_views/',
-        '--config',  'app/nerf/configs/nerf_hash.yaml',
+        '--config', 'app/nerf/configs/nerf_hash.yaml',
         '--wandb-project', 'wisp_playing',
-        '--wandb-run-name', 'debug_b_1',
+        '--wandb-run-name', '5_views_low_depthloss',
         '--wandb-viz-nerf-distance', '2',
         '--epochs', '150',
         '--num-rays-sampled-per-img', '8192',
+        '--multiview-dataset-format', 'standard_with_colmap',
+        '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
+        '--depth-loss-lambda', '0.04',
+        '--force-rgb-random',
         '--valid-every', '30',
         '--prune-every', '20',
-        '--batch-size', '1'
+        '--exp-name', 'debug_loss',
+        '--activation-type', 'relu',
+        '--log-validation-image',
+        '--relative-depth-loss',
+        '--batch-size', '2',
     ]
+
     for arg_to_add in insert_args_to_cli:
         sys.argv.append(arg_to_add)
     args, args_dict = parse_args()  # Obtain args by priority: cli args > config yaml > argparse defaults
@@ -497,12 +524,9 @@ if __name__ == '__main__':
                            train_dataset=train_dataset, validation_dataset=validation_dataset,
                            device=device, scene_state=scene_state,
                            args=args, args_dict=args_dict)
-    app = load_app(args=args, scene_state=scene_state, trainer=trainer)
 
-    if app is not None:
-        app.run()  # Run in interactive mode
+    if args.valid_only:
+        trainer.validate()
     else:
-        if args.valid_only:
-            trainer.validate()
-        else:
-            trainer.train()
+        torch.autograd.set_detect_anomaly(True)
+        trainer.train()
