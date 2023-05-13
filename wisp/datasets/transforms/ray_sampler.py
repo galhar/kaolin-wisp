@@ -7,7 +7,6 @@
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
 import torch
-import numpy as np
 from wisp.datasets.batch import MultiviewBatch
 
 

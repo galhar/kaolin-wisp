@@ -40,3 +40,28 @@ def create_pointcloud_from_images(rgbs, masks, rays, depths):
         cloud_colors.append(colors[...,:3].reshape(-1, 3))
 
     return torch.cat(cloud_coords, dim=0), torch.cat(cloud_colors, dim=0)
+
+def create_edges_pointcloud_from_rays(rays, masks=None):
+    """Given depth images, will create a RGB pointcloud.
+
+    TODO (ttakikawa): Probably make the input a tensor not a list...
+
+    Args:
+        rgbs (list of torch.FloatTensor): List of RGB tensors of shape [H, W, 3].
+        masks (list of torch.FloatTensor): List of mask tensors of shape [H, W, 1].
+        rays (list of wisp.core.Rays): List of rays.origins and rays.dirs of shape [H, W, 3].
+
+    Returns:
+        (torch.FloatTensor, torch.FloatTensor):
+        - 3D coordinates of shape [N*H*W, 3]
+        - colors of shape [N*H*W, 3]
+    """
+    depths = torch.concat([rays.dist_min, rays.dist_max])
+    rays = rays + rays
+    dummy_rgbs = torch.zeros((len(rays), 3))
+    if masks is None:
+        masks = torch.ones((*dummy_rgbs.shape[:-1], 1))
+
+    cloud_coords, _ = create_pointcloud_from_images(dummy_rgbs, masks, rays, depths)
+
+    return cloud_coords

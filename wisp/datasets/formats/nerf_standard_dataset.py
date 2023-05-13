@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 import re
 import glob
+import warnings
+
 import cv2
 import json
 from tqdm import tqdm
@@ -19,6 +21,8 @@ import numpy as np
 import torch
 from torch.multiprocessing import Pool
 from kaolin.render.camera import Camera, blender_coords
+from wisp.ops.pointcloud import create_pointcloud_from_images, normalize_pointcloud
+
 from wisp.core import Rays
 from wisp.datasets.load_llff import load_colmap_depth
 from wisp.ops.raygen import generate_pinhole_rays, generate_ortho_rays, generate_centered_pixel_coords
@@ -706,7 +710,12 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
             _depth = colmap_depth_gt[i]['depth']
             _weight = colmap_depth_gt[i]['error']
             _point3d_idx = colmap_depth_gt[i]['point3d_idx']
+
+            # big_points_idx = np.argwhere(_depth > 2.6)
+            # gt_depth_and_error = np.stack([_depth[big_points_idx].flatten(), _weight[big_points_idx].flatten(), _point3d_idx[big_points_idx].flatten()], axis=1)
+            # _coord = _coord[big_points_idx].reshape((big_points_idx.shape[0],2))
             gt_depth_and_error = np.stack([_depth, _weight, _point3d_idx], axis=1)
+
 
             colmap_depth_gt_sparse[
                 (
@@ -716,11 +725,54 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
                 )] = torch.tensor(
                 gt_depth_and_error, dtype=torch.float32)
 
-        colmap_range = col_far - col_near
-        colmap_depth_gt_sparse[:, 0] = (colmap_depth_gt_sparse[:, 0] - col_near) * (default_far / colmap_range)
+        # Take all of the supervision points, and make sure they fit in the feature grid
+        depths, rays, coords_center, coords_scale = self._normalize(rgbs, ~torch.isnan(colmap_depth_gt_sparse[...,0]), colmap_depth_gt_sparse[...,0], cameras, rays)
+        colmap_depth_gt_sparse[..., 0] = depths
+
+        # Check how many from the rays in each batch comes from the depth supervision
+        # If warning is raised, think what to do with that we have so little rgb supervision...
+        max_depth_n_in_batch = (~torch.isnan(colmap_depth_gt_sparse)).sum(dim=[1, 2]).max().item()
+        rays_n_in_batch = torch.inf if self.transform is None else self.transform.num_samples
+
+        if not max_depth_n_in_batch <= rays_n_in_batch / 3:
+            warnings.warn("Your depth supervision contains more than 1/3 from each batch. From the %d batch rays %d are depth rays" % (rays_n_in_batch, max_depth_n_in_batch))
+
+        # colmap_range = col_far - col_near
+        # colmap_depth_gt_sparse[:, 0] = (colmap_depth_gt_sparse[:, 0] - col_near) * (default_far / colmap_range)
 
         return {"rgb": rgbs, "masks": masks, "rays": rays, "cameras": cameras, "gt_depth": colmap_depth_gt_sparse.to(rgbs.device)}
 
+    @staticmethod
+    def _normalize(images, mask, depths: torch.Tensor, cameras: Dict[str, Camera], rays: List[Rays]):
+        """ Normalizes the content of all views to fit within an axis aligned bounding box of [-1, 1]:
+        1. The pointcloud of teh edges is created.
+        2. The pointcloud is normalized within the AABB of [-1, 1].
+        3. The depth information, generated rays and cameras are rescaled according to normalization factors:
+            coords_center, coords_scale.
+
+        Returns:
+            - (torch.Tensor) depths: the rescaled depth values of each ray
+            - (wisp.core.Rays) rays: the rescaled rays
+            - (torch.Tensor) coords_center: Value used to centeralize the point cloud around 0, 0, 0.
+            - (torch.Tensor) coords_scale: Value used to scale the point cloud within [-1, 1].
+        """
+        # edge_coords = create_edges_pointcloud_from_rays(rays)
+        # normalized_coords, coords_center, coords_scale = normalize_pointcloud(edge_coords, return_scale=True)
+        #
+        coords, _ = create_pointcloud_from_images(images, mask, rays, depths)
+        normalized_coords, coords_center, coords_scale = normalize_pointcloud(coords, return_scale=True)
+
+        depths = depths * coords_scale
+        rays.origins = (rays.origins - coords_center) * coords_scale
+        # The following is only correct when using a single dist_min and dist_max for all rays
+        rays.dist_min *= coords_scale.item()
+        rays.dist_max *= coords_scale.item()
+
+        for cam_id, cam in cameras.items():
+            cam.translate(-coords_center.to(cam.dtype))
+            cam.t = cam.t * coords_scale.to(cam.dtype)
+
+        return depths, rays, coords_center, coords_scale
     def flatten_tensors(self) -> None:
         """ Flattens the cached data tensors to (NUM_VIEWS, NUM_RAYS, *).
         """

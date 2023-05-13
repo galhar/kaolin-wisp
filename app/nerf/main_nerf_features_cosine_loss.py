@@ -21,7 +21,7 @@ from wisp.framework import WispState
 from wisp.datasets import MultiviewDataset, SampleRays, SampleRaysWithSparseChannel
 from wisp.models.grids import BLASGrid, OctreeGrid, CodebookOctreeGrid, TriplanarGrid, HashGrid
 from wisp.tracers import BaseTracer, PackedRFTracer
-from wisp.models.nefs import BaseNeuralField, NeuralRadianceField
+from wisp.models.nefs import BaseNeuralField, NeuralRadianceFieldWithFeaturesChannel
 from wisp.models.pipeline import Pipeline
 from wisp.trainers import BaseTrainer, MultiviewTrainer
 from wisp.trainers.multiview_trainer import MultiviewWithSparseDepthGtTrainer
@@ -136,6 +136,9 @@ def parse_args():
                            choices=['relu', 'sin', 'leaky_relu'])
     nef_group.add_argument('--hidden-dim', type=int, help='MLP Decoder of neural field: width of all hidden layers.')
     nef_group.add_argument('--num-layers', type=int, help='MLP Decoder of neural field: number of hidden layers.')
+    nef_group.add_argument('--extra-channels', type=str, choices=['grid_features'],
+                           default='grid_features',
+                           help='Extra channel of grid_features if desired')
 
     tracer_group = parser.add_argument_group('tracer')
     tracer_group.add_argument('--raymarch-type', type=str, choices=['ray', 'voxel'], default='ray',
@@ -174,7 +177,7 @@ def parse_args():
     trainer_group.add_argument('--log-dir', type=str, default='_results/logs/runs/',
                                help='Log file directory for checkpoints.')
     trainer_group.add_argument('--prune-every', type=int, default=-1,
-                               help='Prune every N epochs')
+                               help='Prune every N epochs') #TODO(galhar) pr for repo for prune every N iterations and not epochs
     trainer_group.add_argument('--grow-every', type=int, default=-1,
                                help='Grow network every X epochs')
     trainer_group.add_argument('--growth-strategy', type=str, default='increase',
@@ -222,6 +225,9 @@ def parse_args():
                                  help='Weight of rgb loss')
     optimizer_group.add_argument('--depth-loss-lambda', type=float, default=0.,
                                  help='Weight of rgb loss')
+    optimizer_group.add_argument('--cosine-similarity-loss-lambda', type=float, default=0.,
+                                 help='Weight of features map cosine similarity loss between same points from different'
+                                      ' images')
     optimizer_group.add_argument('--relative-depth-loss', action='store_true',
                                  help='Make depth loss weighted by the confidence of colmap')
 
@@ -378,7 +384,7 @@ def load_neural_field(args, dataset: MultiviewDataset) -> BaseNeuralField:
     The NeuralRadianceField uses spatial feature grids internally for faster feature interpolation and raymarching.
     """
     grid = load_grid(args=args, dataset=dataset)
-    nef = NeuralRadianceField(
+    nef = NeuralRadianceFieldWithFeaturesChannel(
         grid=grid,
         pos_embedder=args.pos_embedder,
         view_embedder=args.view_embedder,
@@ -494,21 +500,24 @@ if __name__ == '__main__':
         '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_5_views/',
         '--config', 'app/nerf/configs/nerf_hash.yaml',
         '--wandb-project', 'wisp_playing',
-        '--wandb-run-name', '5_views_low_depthloss',
+        '--wandb-run-name', 'debug_dsnerf_with_norm_no_depth',#5_views_reg_depthloss_other_norm_nearfar',
         '--wandb-viz-nerf-distance', '2',
         '--epochs', '150',
-        '--num-rays-sampled-per-img', '8192',
+        '--num-rays-sampled-per-img', '4096',
+        '--num-steps', '512',
         '--multiview-dataset-format', 'standard_with_colmap',
         '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
-        '--depth-loss-lambda', '0.04',
+        '--depth-loss-lambda', '0.',
+        '--rgb-loss-lambda', '1.',
+        '--cosine-similarity-loss-lambda', '0.',
         '--force-rgb-random',
         '--valid-every', '30',
-        '--prune-every', '20',
+        '--prune-every', '31',
         '--exp-name', 'debug_loss',
         '--activation-type', 'relu',
         '--log-validation-image',
         '--relative-depth-loss',
-        '--batch-size', '2',
+        '--batch-size', '2'
     ]
 
     for arg_to_add in insert_args_to_cli:
@@ -529,4 +538,5 @@ if __name__ == '__main__':
         trainer.validate()
     else:
         torch.autograd.set_detect_anomaly(True)
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = 'max_split_size_mb:64'
         trainer.train()
