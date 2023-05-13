@@ -17,7 +17,7 @@ from wisp.trainers import BaseTrainer, log_metric_to_wandb, log_images_to_wandb
 from wisp.ops.image import write_png, write_exr
 from wisp.ops.image.metrics import psnr, lpips, ssim
 from wisp.datasets import MultiviewDataset, WispDataset
-from wisp.core import Rays, RenderBuffer
+from wisp.core import RenderBuffer
 
 import wandb
 import numpy as np
@@ -302,8 +302,8 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         super().pre_step()
 
         if self.extra_args["prune_every"] > -1 and \
-                self.total_iterations > 1 and \
-                self.total_iterations % self.extra_args["prune_every"] == 0:
+                self.epoch > 1 and \
+                self.epoch % self.extra_args["prune_every"] == 0:
             self.pipeline.nef.prune()
 
     def init_log_dict(self):
