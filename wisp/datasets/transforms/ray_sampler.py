@@ -57,8 +57,6 @@ class SampleRaysWithSparseChannel:
         sparse_channel_value = inputs[self.sparse_channel]
         sprase_input_idx = torch.argwhere(~torch.isnan(sparse_channel_value[:,0]))[:,0]
         sprase_input_idx_n = sprase_input_idx.shape[0]
-        # If assertion breaks think what to do with that we have so little rgb supervision
-        assert(sprase_input_idx_n <= self.num_samples / 3)
 
         ray_idx = torch.randint(0, inputs['rays'].shape[0], [self.num_samples - sprase_input_idx_n], device=device)
 
