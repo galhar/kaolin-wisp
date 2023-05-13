@@ -2,6 +2,9 @@ import numpy as np
 import os, imageio
 import torch as torch
 from pathlib import Path
+
+from wisp.ops.image import load_rgb, resize_mip
+
 from wisp.datasets.colmapUtils.read_write_model import *
 from wisp.datasets.colmapUtils.read_write_dense import *
 import json
@@ -519,16 +522,91 @@ def load_colmap_llff(basedir):
 
 
 if __name__ == '__main__':
+    import cv2
     # data_dict, near, far = load_colmap_depth('/home/galharari/datasets/nerf_llff_data/fern')
-    #
-    # depth_gt_sparse = torch.full((10, 1000, 1000, 2), torch.nan)
-    # _coord = data_dict['IMG_4026.JPG']['coord']
-    # _depth = data_dict['IMG_4026.JPG']['depth']
-    # _weight = data_dict['IMG_4026.JPG']['error']
-    # gt_depth_and_error = np.stack([_depth, _weight], axis=1)
-    #
-    # depth_gt_sparse[(np.full((_coord.shape[0],), 1), _coord[:, 0], _coord[:, 1])] = torch.FloatTensor(
-    #     gt_depth_and_error)
+    bash_path = '/mnt/more_space/datasets/nerf_llff_data/fern'
+    data_dict, near, far = load_colmap_depth(bash_path)
 
-    datalist = load_2_images_matchpoints('/mnt/more_space/datasets/nerf_llff_data/fern/', id_img_1=2, id_img_2=15)
-    print(datalist)
+    depth_gt_sparse = torch.full((10, 1000, 1000, 2), torch.nan)
+    _coord_0 = data_dict['IMG_4034']['coord']
+    _depth_0 = data_dict['IMG_4034']['depth']
+    _weight_0 = data_dict['IMG_4034']['error']
+    _point3d_idx_0 = data_dict['IMG_4034']['error']
+
+    _coord_1 = data_dict['IMG_4027']['coord']
+    _depth_1 = data_dict['IMG_4027']['depth']
+    _weight_1 = data_dict['IMG_4027']['error']
+    _point3d_idx_1 = data_dict['IMG_4027']['error']
+
+    mip = 2
+    img_0 = load_rgb(bash_path + '/images/IMG_4034.JPG')
+    if mip is not None:
+        img_0 = resize_mip(img_0, mip, interpolation=cv2.INTER_AREA)
+
+    img_1 = load_rgb(bash_path + '/images/IMG_4043.JPG')
+    if mip is not None:
+        img_1 = resize_mip(img_1, mip, interpolation=cv2.INTER_AREA)
+
+    # Coord[0] is on img[1] and coord[1] is on img[0]
+    point3d_idx_0_non_nan = _point3d_idx_0[~np.isnan(_point3d_idx_0)]
+    point3d_idx_1_non_nan = _point3d_idx_1[~np.isnan(_point3d_idx_1)]
+    point3d_matches_idx = point3d_idx_0_non_nan[np.isin(point3d_idx_0_non_nan, point3d_idx_1_non_nan)]
+
+    point3d_i = point3d_matches_idx[0]
+    coord_0 = np.argwhere(_point3d_idx_0 == point3d_i)
+    coord_1 = np.argwhere(_point3d_idx_1 == point3d_i)
+    all_coord_0 = np.argwhere(np.isin(_point3d_idx_0, point3d_matches_idx))
+    all_coord_1 = np.argwhere(np.isin(_point3d_idx_1, point3d_matches_idx))
+
+    # datalist = load_2_images_matchpoints('/mnt/more_space/datasets/nerf_llff_data/fern/', id_img_1=2, id_img_2=15)
+    # print(datalist)
+
+    import cv2, torch
+
+    rgb = torch.load('_results/logs/runs/rgb.pt')
+    gt_depth = torch.load('_results/logs/runs/gt_depth.pt')
+    rgb_0 = rgb[0,...].numpy()
+    rgb_1 = rgb[1,...].numpy()
+
+    gt_depth_0 = gt_depth[0, ...].numpy()
+    gt_depth_1 = gt_depth[1, ...].numpy()
+
+    depth_0, error_0, point3d_idx_0 = gt_depth_0[..., 0], gt_depth_0[..., 1], gt_depth_0[..., 2]
+    depth_1, error_1, point3d_idx_1 = gt_depth_1[..., 0], gt_depth_1[..., 1], gt_depth_1[..., 2]
+
+    point3d_idx_0_non_nan = point3d_idx_0[~np.isnan(point3d_idx_0)]
+    point3d_idx_1_non_nan = point3d_idx_1[~np.isnan(point3d_idx_1)]
+
+    point3d_matches_idx = point3d_idx_0_non_nan[np.isin(point3d_idx_0_non_nan, point3d_idx_1_non_nan)]
+
+    point3d_i = point3d_matches_idx[0]
+    coord_0 = np.argwhere(point3d_idx_0 == point3d_i)
+    coord_1 = np.argwhere(point3d_idx_1 == point3d_i)
+    all_coord_0 = np.argwhere(np.isin(point3d_idx_0, point3d_matches_idx))
+    all_coord_1 = np.argwhere(np.isin(point3d_idx_1, point3d_matches_idx))
+
+    # img3 = cv2.drawMatches(rgb_0,
+    #                        [cv2.KeyPoint(x=int(x[0]), y=int(x[1]), size=31) for x in all_coord_0],
+    #                        rgb_1,
+    #                        [cv2.KeyPoint(x=int(x[0]), y=int(x[1]), size=31) for x in all_coord_1],
+    #                        [i for i in range(10)], None, flags=2)
+    for point3d_i in point3d_matches_idx[0: 30]:
+        coord_0 = np.where(point3d_idx_0 == point3d_i)
+        coord_1 = np.where(point3d_idx_1 == point3d_i)
+        # Opencv draws circle with reverse coordinates
+        # cv2.circle(rgb_0, (coord_0[1][0], coord_0[0][0]), radius=5, color=(0, 0, 255),thickness=-1)
+        # cv2.circle(rgb_1, (coord_1[1][0], coord_1[0][0]), radius=5, color=(0, 0, 255),thickness=-1)
+        cv2.circle(rgb_0, (950, 750), radius=5, color=(0, 0, 255),thickness=-1)
+        cv2.circle(rgb_1, (750, 950), radius=5, color=(0, 0, 255),thickness=-1)
+        # rgb_0[coord_0] = (0,0,255)
+        # rgb_1[coord_1] = (0,0,255)
+
+    cv2.imshow('img_0', rgb_0)
+    cv2.waitKey(30)
+    cv2.imshow('img_1', rgb_1)
+    cv2.waitKey(30)
+    # cv2.imshow('img_3', img3)
+    cv2.waitKey(0)
+
+
+
