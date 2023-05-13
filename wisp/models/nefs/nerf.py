@@ -263,3 +263,33 @@ class NeuralRadianceField(BaseNeuralField):
         if self.prune_min_density is not None:
             properties['Pruning Min Density'] = self.prune_min_density
         return properties
+
+
+class NeuralRadianceFieldWithFeaturesChannel(NeuralRadianceField):
+    """Model for encoding Neural Radiance Fields (Mildenhall et al. 2020), e.g., density and view dependent color.
+    Different to the original NeRF paper, this implementation uses feature grids for a
+    higher quality and more efficient implementation, following later trends in the literature,
+    such as Neural Sparse Voxel Fields (Liu et al. 2020), Instant Neural Graphics Primitives (Muller et al. 2022)
+    and Variable Bitrate Neural Fields (Takikawa et al. 2022).
+    """
+
+    def register_forward_functions(self):
+        """Register the forward functions.
+        """
+        super().register_forward_functions()
+        self._register_forward_function(self.feats_ch, ["grid_features"])
+
+    def feats_ch(self, coords, ray_d, lod_idx=None):
+        if lod_idx is None:
+            lod_idx = len(self.grid.active_lods) - 1
+        batch, _ = coords.shape
+
+        # Embed coordinates into high-dimensional vectors with the grid.
+        feats = self.grid.interpolate(coords, lod_idx).reshape(batch, self.effective_feature_dim())
+
+        # Optionally concat the positions to the embedding
+        if self.pos_embedder is not None:
+            embedded_pos = self.pos_embedder(coords).view(batch, self.pos_embed_dim)
+            feats = torch.cat([feats, embedded_pos], dim=-1)
+
+        return dict(grid_features=feats)

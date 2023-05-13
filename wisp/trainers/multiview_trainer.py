@@ -312,6 +312,8 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         super().init_log_dict()
         self.log_dict['rgb_loss'] = 0.0
         self.log_dict['depth_loss'] = 0.0
+        self.log_dict['depth_loss'] = 0.0
+        self.log_dict['feats_cosine_similarity_loss'] = 0.0
         self.log_dict['lr'] = self.optimizer.param_groups[0]['lr']
 
     @torch.cuda.nvtx.range("MultiviewTrainer.step")
@@ -338,7 +340,7 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
             # Sample only the max lod (None is max lod by default)
             lod_idx = None
 
-        rb = self.pipeline(rays=rays, lod_idx=lod_idx, channels=["rgb", "depth", 'feats'])
+        rb = self.pipeline(rays=rays, lod_idx=lod_idx, channels=["rgb", "depth", 'grid_features'])
 
         # RGB Loss
         rgb_gt_idx = ~rgb_gts.isnan()
@@ -354,22 +356,41 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         depth_loss = depth_loss.mean()
 
         # Features Similarity Loss
-        # feats_map = rb.feats
-        # vals, dups_idx = MultiviewWithSparseDepthGtTrainer.get_duplications_idx(point3d_idx.cpu().numpy()[:,0])
-        #
-        # # Note that the mean over the l2 between the features includes mean over some zeros,
-        # # since it has duplication of the same ray when the same depth ray was randomly sampled
-        # cos_sim = torch.nn.CosineSimilarity(dim=1,eps=1e-08)
-        # feats_cosine_similarity_loss = cos_sim(feats_map[dups_idx][:,0,:], rgb_gts[feats_map][:,1,:])
-        # feats_cosine_similarity_loss = feats_cosine_similarity_loss.mean()
+        feats_map = rb.grid_features
+        vals, dups_idx = MultiviewWithSparseDepthGtTrainer.get_duplications_idx(point3d_idx.cpu().numpy()[:,0], only_doubles=True)
+        dups_idx = np.array(dups_idx)
 
+        # Sample negative from sups_idxs pool, to supply negative gt for the points that got positive gt
+        negative_samples_pool_side_a = dups_idx.flatten()
+        negative_samples_pool_side_b = negative_samples_pool_side_a.copy()
+        np.random.shuffle(negative_samples_pool_side_b)
+        neg_pairs_idx = np.vstack([negative_samples_pool_side_a, negative_samples_pool_side_b]).T
+        neg_pairs_idx = neg_pairs_idx[:len(dups_idx),:]
+
+        # Note that the mean over the l2 between the features includes mean over some zeros,
+        # since it has duplication of the same ray when the same depth ray was randomly sampled
+        # TODO:
+        #  Sample also negative points:
+        #  1. The known negative points are points from the duplicates pool since we know they have a different match,
+        #  but they are little so maybe we should add randomly sampled as negative.
+        #  2. We can sample the points where it is hardest, meaning points where the rgb is similar, as negative sampled.
+
+        all_pairs = torch.cat([feats_map[dups_idx, :], feats_map[neg_pairs_idx, :]])
+        device = all_pairs.device
+        points_pairs_labels = torch.concat([
+            torch.ones(size=(len(dups_idx),), device=device),
+            torch.ones(size=(len(neg_pairs_idx),), device=device)
+        ])
+
+        cos_sim = torch.nn.CosineEmbeddingLoss()
+        feats_cosine_similarity_loss = cos_sim(all_pairs[:,0,:], all_pairs[:,1,:], points_pairs_labels)
 
         loss += self.extra_args["rgb_loss_lambda"] * rgb_loss
         loss += self.extra_args["depth_loss_lambda"] * depth_loss
-        # loss += self.extra_args["cosine_similarity_loss_lambda"] * feats_cosine_similarity_loss
+        loss += self.extra_args["cosine_similarity_loss_lambda"] * feats_cosine_similarity_loss
         self.log_dict['rgb_loss'] += rgb_loss.item()
         self.log_dict['depth_loss'] += depth_loss.item()
-        # self.log_dict['cosine_similarity_loss'] += feats_cosine_similarity_loss.item()
+        self.log_dict['feats_cosine_similarity_loss'] += feats_cosine_similarity_loss.item()
 
         self.log_dict['total_loss'] += loss.item()
 
@@ -390,9 +411,10 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
 
     def log_cli(self):
         log_text = 'EPOCH {}/{}'.format(self.epoch, self.max_epochs)
-        log_text += ' | total loss: {:>.3E}'.format(self.log_dict['total_loss'] / len(self.train_data_loader))
-        log_text += ' | rgb loss: {:>.3E}'.format(self.log_dict['rgb_loss'] / len(self.train_data_loader))
-        log_text += ' | depth loss: {:>.3E}'.format(self.log_dict['depth_loss'] / len(self.train_data_loader))
+        n_batches = len(self.train_data_loader)
+        for key, val in self.log_dict.items():
+            if 'loss' in key:
+                log_text += ' | {}: {:>.3E}'.format(key.replace('_', ' '), val / n_batches)
         log_text += ' | lr: {:>.4E}'.format(self.log_dict['lr'])
 
         log.info(log_text)

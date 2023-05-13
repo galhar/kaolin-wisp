@@ -507,8 +507,9 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
                 For example: ray sampling, to filter the amount of rays returned per batch.
                 When multiple transforms are needed, the transform callable may be a composition of multiple Callable.
         """
-        return NeRFSyntheticDataset(
+        return NeRFSyntheticDatasetWithCOLMAP(
             dataset_path=self.dataset_path,
+            colmap_res_path=self.colmap_res_path,
             split=split,
             bg_color=self.bg_color,
             mip=self.mip,
@@ -539,38 +540,6 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
             out = self.transform(out)
 
         return out
-
-    @staticmethod
-    def _load_single_entry(frame, root, mip=None):
-        """ Loads a single image: takes a frame from the JSON to load image and associated poses from json.
-        This is a helper function which also supports multiprocessing for the standard dataset.
-
-        Args:
-            root (str): The root of the dataset.
-            frame (dict): The frame object from the transform.json. The frame contains the metadata.
-            mip (int): Optional, If set, rescales the image by 2**mip.
-
-        Returns:
-            (dict): Dictionary of the image and pose.
-        """
-        fpath = os.path.join(root, frame['file_path'].replace("\\", "/"))
-
-        basename = os.path.basename(os.path.splitext(fpath)[0])
-        if os.path.splitext(fpath)[1] == "":
-            # Assume PNG file if no extension exists... the NeRF synthetic data follows this convention.
-            fpath += '.png'
-
-        # For some reason instant-ngp allows missing images that exist in the transform but not in the data.
-        # Handle this... also handles the above case well too.
-        if os.path.exists(fpath):
-            img = load_rgb(fpath)
-            if mip is not None:
-                img = resize_mip(img, mip, interpolation=cv2.INTER_AREA)
-            return dict(basename=basename,
-                        img=torch.FloatTensor(img), pose=torch.FloatTensor(np.array(frame['transform_matrix'])))
-        else:
-            # log.info(f"File name {fpath} doesn't exist. Ignoring.")
-            return None
 
     def load_singleprocess(self):
         """Standard parsing function for loading nerf-synthetic files on the main process.
@@ -604,57 +573,6 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
                 colmap_depth_gt.append(colmap_depth.get(_data["basename"], None))
 
         return self._collect_data_entries_with_colmap(metadata=metadata, basenames=basenames, imgs=imgs, poses=poses, colmap_depth_gt=colmap_depth_gt, col_near=col_near, col_far=col_far)
-
-    @staticmethod
-    def _parallel_load_standard_imgs(args):
-        """ Internal function used by the multiprocessing loader: allocates a single entry task for a worker.
-        """
-        torch.set_num_threads(1)
-        result = NeRFSyntheticDataset._load_single_entry(args['frame'], args['root'], mip=args['mip'])
-        if result is None:
-            return dict(basename=None, img=None, pose=None)
-        else:
-            return dict(basename=result['basename'], img=result['img'], pose=result['pose'])
-
-    def load_multiprocess(self):
-        """Standard parsing function for loading nerf-synthetic files with multiple workers.
-        This follows the conventions defined in https://github.com/NVlabs/instant-ngp.
-
-        Returns:
-            (dict of torch.FloatTensors): Channels of information from NeRF:
-                - 'rays': a list of ray packs, each entry corresponds to a single camera view
-                - 'rgb', 'masks': a list of torch.Tensors, each entry corresponds to a single gt image
-                - 'cameras': a list of Camera objects, one camera per view
-        """
-        with open(self._transform_file, 'r') as f:
-            metadata = json.load(f)
-
-        imgs = []
-        poses = []
-        basenames = []
-
-        p = Pool(self.dataset_num_workers)
-        try:
-            mp_entries = [dict(frame=frame, root=self.dataset_path, mip=self.mip)
-                          for frame in metadata['frames']]
-            iterator = p.imap(NeRFSyntheticDataset._parallel_load_standard_imgs, mp_entries)
-
-            for _ in tqdm(range(len(metadata['frames']))):
-                result = next(iterator)
-                basename = result['basename']
-                img = result['img']
-                pose = result['pose']
-                if basename is not None:
-                    basenames.append(basename)
-                if img is not None:
-                    imgs.append(img)
-                if pose is not None:
-                    poses.append(pose)
-        finally:
-            p.close()
-            p.join()
-
-        return self._collect_data_entries(metadata=metadata, basenames=basenames, imgs=imgs, poses=poses)
 
     def _collect_data_entries_with_colmap(self, metadata, basenames, imgs, poses, colmap_depth_gt, col_near, col_far) -> Dict[str, Union[torch.Tensor, Rays, Camera]]:
         """ Internal function for aggregating the pre-loaded multi-views.
@@ -751,8 +669,8 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
                                       focal_y=fy,
                                       width=w,
                                       height=h,
-                                      far=default_far,
-                                      near=0.0,
+                                      far=col_far,#default_far,
+                                      near=col_near,#0.0,
                                       x0=x0,
                                       y0=y0,
                                       dtype=torch.float64)
@@ -812,18 +730,3 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
         self.data["gt_depth"] = self.data["gt_depth"].reshape(num_imgs, -1, 3)
         if "masks" in self.data:
             self.data["masks"] = self.data["masks"].reshape(num_imgs, -1, 1)
-
-    @property
-    def img_shape(self) -> torch.Size:
-        """ Returns the shape of the rescaled dataset images (cached values are flattened) """
-        return self._img_shape
-
-    @property
-    def cameras(self) -> List[Camera]:
-        """ Returns the list of camera views used to generate rays for this dataset. """
-        return self.data["cameras"]
-
-    @property
-    def num_images(self) -> int:
-        """ Returns the number of views this dataset stores. """
-        return self.data["rgb"].shape[0]
