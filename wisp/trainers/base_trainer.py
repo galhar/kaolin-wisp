@@ -523,10 +523,15 @@ class BaseTrainer(ABC):
         Override this function to change loss / other numeric logging to TensorBoard / Wandb.
         """
         for key in self.log_dict:
-            if 'loss' in key or key == 'lr':
+            if 'loss' in key:
                 self.writer.add_scalar(f'loss/{key}', self.log_dict[key] / len(self.train_data_loader), self.epoch)
                 if self.using_wandb:
                     log_metric_to_wandb(f'loss/{key}', self.log_dict[key] / len(self.train_data_loader), self.epoch)
+            if 'lr' in key:
+                self.writer.add_scalar(f'loss/{key}', self.log_dict[key], self.epoch)
+                if self.using_wandb:
+                    log_metric_to_wandb(f'loss/{key}', self.log_dict[key], self.epoch)
+
 
     def render_tb(self):
         """
