@@ -525,7 +525,7 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     train_dataset, validation_dataset = load_dataset(args=args)
-    pipeline_with_features = torch.load('_results/logs/runs/5_views_low_depthloss_with_cosine_loss/20230501-010127/model.pth')
+    pipeline_with_features = torch.load('_results/logs/runs/dsnerf_high_cosine_loss/20230515-221556/model.pth')
     scene_state = WispState()   # Joint trainer / app state
     trainer = load_trainer(pipeline=pipeline_with_features,
                            train_dataset=train_dataset, validation_dataset=validation_dataset,
@@ -560,30 +560,30 @@ if __name__ == '__main__':
             full_batch = MultiviewBatch(
                 rays=dataset.data["rays"][idx],
                 rgb=dataset.data["rgb"][idx],
-                masks=dataset.data["masks"][idx]
+                masks=dataset.data["masks"][idx],
+                gt_depth=dataset.data["gt_depth"][idx]
             )
             img_name = list(dataset.data['cameras'].keys())[idx]
 
-            gts = full_batch['rgb'].to('cuda')
+            rgb_gt = full_batch['rgb'].to('cuda')
+            depth_gt = full_batch['gt_depth']
             rays = full_batch['rays'].to('cuda')
             rb = trainer.renderer.render(trainer.pipeline, rays, lod_idx=lod_idx)
 
-            gts = gts.reshape(*img_shape, -1)
+            rgb_gt = rgb_gt.reshape(*img_shape, -1)
+            depth_gt = depth_gt.reshape(*img_shape, -1)
             rb = rb.reshape(*img_shape, -1)
 
             out_rb = RenderBuffer(rgb=rb.rgb, depth=rb.depth, alpha=rb.alpha, \
-                                  gts=gts, err=(gts[..., :3] - rb.rgb[..., :3]) ** 2)
+                                  gts=rgb_gt, err=(rgb_gt[..., :3] - rb.rgb[..., :3]) ** 2)
 
             out_name = f"out_{idx}"
             in_name = f"in_{idx}"
             torch.save(rb.cpu().grid_features, os.path.join(res_dir, out_name + "_features" + ".pt"))
             torch.save(rb.cpu().rgb, os.path.join(res_dir, out_name + "_image" + ".pt"))
-            torch.save(gts.cpu(), os.path.join(res_dir, in_name + "_image" + ".pt"))
+            torch.save(rgb_gt.cpu(), os.path.join(res_dir, in_name + "_image" + ".pt"))
+            torch.save(depth_gt.cpu(), os.path.join(res_dir, in_name + "_gt_depth" + ".pt"))
             torch.save(rb.cpu().depth, os.path.join(res_dir, out_name + "_depth" + ".pt"))
 
-            write_png(os.path.join(res_dir, in_name + img_name + ".png"), torch.tensor((gts.cpu() * 255), dtype=torch.uint8))
+            write_png(os.path.join(res_dir, in_name + img_name + ".png"), torch.tensor((rgb_gt.cpu() * 255), dtype=torch.uint8))
             write_png(os.path.join(res_dir, out_name + img_name + ".png"), out_rb.cpu().image().byte().rgb)
-
-        ret_key = None
-        while ret_key != ord('q'):
-            ret_key = cv2.waitKey(0)

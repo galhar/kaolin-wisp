@@ -7,6 +7,7 @@
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
 import torch
+from wisp.core import Rays
 
 
 def create_pointcloud_from_images(rgbs, masks, rays, depths):
@@ -42,23 +43,29 @@ def create_pointcloud_from_images(rgbs, masks, rays, depths):
     return torch.cat(cloud_coords, dim=0), torch.cat(cloud_colors, dim=0)
 
 def create_edges_pointcloud_from_rays(rays, masks=None):
-    """Given depth images, will create a RGB pointcloud.
-
-    TODO (ttakikawa): Probably make the input a tensor not a list...
+    """Given rays, will create a coords pointcloud of a little gap from the edges.
 
     Args:
-        rgbs (list of torch.FloatTensor): List of RGB tensors of shape [H, W, 3].
-        masks (list of torch.FloatTensor): List of mask tensors of shape [H, W, 1].
-        rays (list of wisp.core.Rays): List of rays.origins and rays.dirs of shape [H, W, 3].
+        masks (torch.FloatTensor): mask tensors of shape [H, W, 1].
+        rays (wisp.core.Rays): rays.origins and rays.dirs of shape [H, W, 3].
 
     Returns:
         (torch.FloatTensor, torch.FloatTensor):
         - 3D coordinates of shape [N*H*W, 3]
         - colors of shape [N*H*W, 3]
     """
-    depths = torch.concat([rays.dist_min, rays.dist_max])
-    rays = rays + rays
-    dummy_rgbs = torch.zeros((len(rays), 3))
+    low_edge_fac = 1.09
+    high_edge_fac = 0.999
+    low_edge = rays.dist_min * low_edge_fac
+    high_edge = rays.dist_max * high_edge_fac
+    if not isinstance(low_edge, torch.Tensor):
+        low_edge = torch.full((*rays.shape, 1), low_edge)
+    if not isinstance(high_edge, torch.Tensor):
+        high_edge = torch.full((*rays.shape, 1), high_edge)
+
+    depths = torch.concat([low_edge, high_edge])
+    rays = Rays.cat([rays, rays])
+    dummy_rgbs = torch.zeros((*rays.shape, 3))
     if masks is None:
         masks = torch.ones((*dummy_rgbs.shape[:-1], 1))
 

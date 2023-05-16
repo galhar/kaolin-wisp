@@ -21,7 +21,7 @@ import numpy as np
 import torch
 from torch.multiprocessing import Pool
 from kaolin.render.camera import Camera, blender_coords
-from wisp.ops.pointcloud import create_pointcloud_from_images, normalize_pointcloud
+from wisp.ops.pointcloud import create_pointcloud_from_images, normalize_pointcloud, create_edges_pointcloud_from_rays
 
 from wisp.core import Rays
 from wisp.datasets.load_llff import load_colmap_depth
@@ -726,7 +726,7 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
                 gt_depth_and_error, dtype=torch.float32)
 
         # Take all of the supervision points, and make sure they fit in the feature grid
-        depths, rays, coords_center, coords_scale = self._normalize(rgbs, ~torch.isnan(colmap_depth_gt_sparse[...,0]), colmap_depth_gt_sparse[...,0], cameras, rays)
+        depths, rays, coords_center, coords_scale = self._normalize(colmap_depth_gt_sparse[...,0], cameras, rays)
         colmap_depth_gt_sparse[..., 0] = depths
 
         # Check how many from the rays in each batch comes from the depth supervision
@@ -743,9 +743,9 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
         return {"rgb": rgbs, "masks": masks, "rays": rays, "cameras": cameras, "gt_depth": colmap_depth_gt_sparse.to(rgbs.device)}
 
     @staticmethod
-    def _normalize(images, mask, depths: torch.Tensor, cameras: Dict[str, Camera], rays: List[Rays]):
+    def _normalize(depths: torch.Tensor, cameras: Dict[str, Camera], rays: List[Rays]):
         """ Normalizes the content of all views to fit within an axis aligned bounding box of [-1, 1]:
-        1. The pointcloud of teh edges is created.
+        1. The pointcloud of a little gap from the edges is created.
         2. The pointcloud is normalized within the AABB of [-1, 1].
         3. The depth information, generated rays and cameras are rescaled according to normalization factors:
             coords_center, coords_scale.
@@ -759,7 +759,7 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
         # edge_coords = create_edges_pointcloud_from_rays(rays)
         # normalized_coords, coords_center, coords_scale = normalize_pointcloud(edge_coords, return_scale=True)
         #
-        coords, _ = create_pointcloud_from_images(images, mask, rays, depths)
+        coords = create_edges_pointcloud_from_rays(rays)
         normalized_coords, coords_center, coords_scale = normalize_pointcloud(coords, return_scale=True)
 
         depths = depths * coords_scale
