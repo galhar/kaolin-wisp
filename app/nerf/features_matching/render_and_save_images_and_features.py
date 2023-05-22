@@ -524,8 +524,11 @@ if __name__ == '__main__':
     default_log_setup(args.log_level)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    model_path = '_results/logs/runs/dsnerf_fixed_cosine_loss/20230516-235940/model.pth'
+    model_name = model_path.split('/')[3]
+
     train_dataset, validation_dataset = load_dataset(args=args)
-    pipeline_with_features = torch.load('_results/logs/runs/dsnerf_high_cosine_loss/20230515-221556/model.pth')
+    pipeline_with_features = torch.load(model_path)
     scene_state = WispState()   # Joint trainer / app state
     trainer = load_trainer(pipeline=pipeline_with_features,
                            train_dataset=train_dataset, validation_dataset=validation_dataset,
@@ -539,10 +542,6 @@ if __name__ == '__main__':
     logging.info(f"Running rendering on dataset with {len(trainer.train_dataset)} images "
                  f"at resolution {img_shape[0]}x{img_shape[1]}")
 
-    trainer.valid_log_dir = os.path.join(trainer.log_dir, "renders_llff")
-    logging.info(f"Saving rendering result to {trainer.valid_log_dir}")
-
-
     lods = list(range(trainer.pipeline.nef.grid.num_lods))
 
     pips_model = None
@@ -552,7 +551,11 @@ if __name__ == '__main__':
 
     img_count = len(dataset)
     img_shape = dataset.img_shape
-    res_dir = 'app/nerf/features_matching/renders_output'
+    res_dir = 'app/nerf/features_matching/renders_output/' + model_name + '/'
+    if not os.path.isdir(res_dir):
+        os.mkdir(res_dir)
+    logging.info(f"Saving rendering result to {res_dir}")
+
 
     with torch.no_grad():
         for idx in tqdm(range(len(dataset))):

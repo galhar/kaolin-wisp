@@ -379,7 +379,7 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         device = all_pairs.device
         points_pairs_labels = torch.concat([
             torch.ones(size=(len(dups_idx),), device=device),
-            torch.ones(size=(len(neg_pairs_idx),), device=device)
+            - torch.ones(size=(len(neg_pairs_idx),), device=device)
         ])
 
         cos_sim = torch.nn.CosineEmbeddingLoss()
