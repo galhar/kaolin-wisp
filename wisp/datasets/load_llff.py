@@ -3,6 +3,7 @@ import os, imageio
 import torch as torch
 from pathlib import Path
 
+from wisp.datasets.colmapUtils.pose_utils import gen_poses
 from wisp.ops.image import load_rgb, resize_mip
 
 from wisp.datasets.colmapUtils.read_write_model import *
@@ -65,8 +66,8 @@ def _minify(basedir, factors=[], resolutions=[]):
         print('Done')
 
 
-def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
-    poses_arr = np.load(os.path.join(basedir, 'poses_bounds.npy'))
+def _load_data(basedir, bin_model_dir, factor=None, width=None, height=None, load_imgs=True):
+    poses_arr = gen_poses(basedir, bin_model_dir, factors=[factor])
     poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1, 2, 0])  # 3 x 5 x N
     bds = poses_arr[:, -2:].transpose([1, 0])
 
@@ -93,6 +94,12 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     else:
         factor = 1
 
+    poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
+    poses[2, 4, :] = poses[2, 4, :] * 1. / factor
+
+    if not load_imgs:
+        return poses, bds
+
     imgdir = os.path.join(basedir, 'images' + sfx)
     if not os.path.exists(imgdir):
         print(imgdir, 'does not exist, returning')
@@ -103,13 +110,6 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     if poses.shape[-1] != len(imgfiles):
         print('Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]))
         return
-
-    sh = imageio.imread(imgfiles[0]).shape
-    poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
-    poses[2, 4, :] = poses[2, 4, :] * 1. / factor
-
-    if not load_imgs:
-        return poses, bds
 
     def imread(f):
         if f.endswith('png'):
@@ -330,18 +330,17 @@ def get_poses(images):
     return np.array(poses)
 
 
-def load_colmap_depth(basedir, factor=8, bd_factor=.75):
-    data_file = Path(basedir) / 'colmap_depth.npy'
-
-    images = read_images_binary(Path(basedir) / 'sparse' / '0' / 'images.bin')
-    points = read_points3d_binary(Path(basedir) / 'sparse' / '0' / 'points3D.bin')
+def load_colmap_depth(basedir, bin_model_dir, factor=8, bd_factor=.75):
+    abs_model_dir = os.path.join(basedir, bin_model_dir)
+    images = read_images_binary(os.path.join(abs_model_dir, 'images.bin'))
+    points = read_points3d_binary(os.path.join(abs_model_dir, 'points3D.bin'))
 
     Errs = np.array([point3D.error for point3D in points.values()])
     Err_mean = np.mean(Errs)
     print("Mean Projection Error:", Err_mean)
 
     poses = get_poses(images)
-    _, bds_raw, _ = _load_data(basedir, factor=factor) # factor=8 downsamples original imgs by 8x
+    _, bds_raw = _load_data(basedir, bin_model_dir, factor=factor, load_imgs=False) # factor=8 downsamples original imgs by 8x
     bds_raw = np.moveaxis(bds_raw, -1, 0).astype(np.float32)
     # print(bds_raw.shape)
     # Rescale if bd_factor is provided

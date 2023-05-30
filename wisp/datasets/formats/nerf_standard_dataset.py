@@ -559,7 +559,7 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
             metadata = json.load(f)
 
         # Load COLMAP
-        colmap_depth, col_near, col_far = load_colmap_depth(self.colmap_res_path, factor=self.mip**2)
+        colmap_depth, col_near, col_far = load_colmap_depth(self.colmap_res_path, metadata['colmap_bin_model_path'], factor=self.mip**2)
 
         # Load the images
 
