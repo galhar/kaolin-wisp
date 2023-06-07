@@ -287,7 +287,36 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
                  render_tb_every, save_every, trainer_mode, using_wandb,
                  enable_amp)
         self.relative_depth_loss = relative_depth_loss
+        self.features_scaler = torch.cuda.amp.GradScaler()
+        self.init_feautres_optimizer()
 
+    def init_feautres_optimizer(self):
+        """Default initialization for the optimizer.
+        """
+
+        params_dict = {name: param for name, param in self.pipeline.nef.named_parameters()}
+
+        params = []
+        grid_params = []
+
+        for name in params_dict:
+            if 'grid' in name:
+                # If "grid" is in the name, there's a good chance it is in fact a grid,
+                # so use grid_lr_weight
+                grid_params.append(params_dict[name])
+
+        params.append({"params": grid_params,
+                       "lr": self.lr * self.grid_lr_weight})
+
+        self.features_optimizer = self.optim_cls(params, **self.optim_params)
+        self.features_lr_scheduler = self.lr_scheduler_cls(optimizer=self.features_optimizer, **self.lr_scheduler_params)
+
+    def end_epoch(self):
+        """End epoch.
+        """
+        super().end_epoch()
+        if self.epoch < self.max_epochs:
+            self.features_lr_scheduler.step()
 
     def populate_scenegraph(self):
         """ Updates the scenegraph with information about available objects.
@@ -328,7 +357,8 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
 
         self.optimizer.zero_grad(set_to_none=True)
 
-        loss = 0
+        general_loss = 0
+        features_loss = 0
 
         if self.extra_args["random_lod"]:
             # Sample from a geometric distribution
@@ -385,22 +415,26 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         cos_sim = torch.nn.CosineEmbeddingLoss()
         feats_cosine_similarity_loss = cos_sim(all_pairs[:,0,:], all_pairs[:,1,:], points_pairs_labels)
 
-        loss += self.extra_args["rgb_loss_lambda"] * rgb_loss
-        loss += self.extra_args["depth_loss_lambda"] * depth_loss
-        loss += self.extra_args["cosine_similarity_loss_lambda"] * feats_cosine_similarity_loss
+        general_loss += self.extra_args["rgb_loss_lambda"] * rgb_loss
+        general_loss += self.extra_args["depth_loss_lambda"] * depth_loss
+        features_loss += self.extra_args["cosine_similarity_loss_lambda"] * feats_cosine_similarity_loss
         self.log_dict['rgb_loss'] += rgb_loss.item()
         self.log_dict['depth_loss'] += depth_loss.item()
         self.log_dict['feats_cosine_similarity_loss'] += feats_cosine_similarity_loss.item()
 
-        self.log_dict['total_loss'] += loss.item()
+        self.log_dict['total_loss'] += general_loss.item() + features_loss.item()
 
-        # self.optimizer.zero_grad()
-        # loss.backward()
-        # self.optimizer.step()
         with torch.cuda.nvtx.range("MultiviewTrainer.backward"):
-            self.scaler.scale(loss).backward()
+            self.scaler.scale(general_loss).backward(retain_graph=True)
             self.scaler.step(self.optimizer)
             self.scaler.update()
+
+            # Features optimizer have in it only the grid parameters to optimize, doesn't affect the decoder itself
+            self.features_optimizer.zero_grad()
+            self.features_scaler.scale(features_loss).backward()
+            self.features_scaler.step(self.features_optimizer)
+            self.features_scaler.update()
+
 
     def log_tb(self):
         super().log_tb()

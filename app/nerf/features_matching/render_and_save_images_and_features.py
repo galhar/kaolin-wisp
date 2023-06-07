@@ -524,7 +524,7 @@ if __name__ == '__main__':
     default_log_setup(args.log_level)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model_path = '_results/logs/runs/dsnerf_fixed_cosine_loss/20230516-235940/model.pth'
+    model_path = '_results/logs/runs/strong_f_loss_optimize_features_loss_separately/20230525-195552/model.pth'
     model_name = model_path.split('/')[3]
 
     train_dataset, validation_dataset = load_dataset(args=args)

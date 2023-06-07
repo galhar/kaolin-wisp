@@ -501,7 +501,7 @@ if __name__ == '__main__':
         '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_5_v_to_add_to_existing_colmap/',
         '--config', 'app/nerf/configs/nerf_hash.yaml',
         '--wandb-project', 'wisp_playing',
-        '--wandb-run-name', 'try_my_colmap_run_with_proper_val_dir',#strong_f_loss_optimize_features_loss_separately',
+        '--wandb-run-name', 'try_my_colmap_run_with_proper_val_dir_fixed_norm',#strong_f_loss_optimize_features_loss_separately',
         '--wandb-viz-nerf-distance', '2',
         '--epochs', '150',
         '--num-rays-sampled-per-img', '4096',

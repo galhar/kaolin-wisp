@@ -128,6 +128,7 @@ class PackedRFTracer(BaseTracer):
 
         # Compute the color and density for each ray and their samples
         num_samples = samples.shape[0]
+        # TODO(galhar): allow nef to get t, ep\it number, for masking
         color, density = nef(coords=samples, ray_d=hit_ray_d, lod_idx=lod_idx, channels=["rgb", "density"])
         density = density.reshape(num_samples, 1)    # Protect against squeezed return shape
         del ridx

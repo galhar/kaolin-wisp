@@ -288,10 +288,9 @@ class NeuralRadianceFieldWithFeaturesChannel(NeuralRadianceField):
         feats = self.grid.interpolate(coords, lod_idx).reshape(batch, self.effective_feature_dim())
 
         # Optionally concat the positions to the embedding
-        if self.pos_embedder is not None:
-            embedded_pos = self.pos_embedder(coords).view(batch, self.pos_embed_dim)
-            feats = torch.cat([feats, embedded_pos], dim=-1)
-            # TODO(galhar): try to remove the pos embedding then check the results with the cosine similairty loss
-            # TODO(galhar): Stop the gradients from the features cosine similarity to affect the densities, and only use it to change the features themselves as this is what we seek for, the other thing would come from the depth supervision
+        # if self.pos_embedder is not None:
+        #     embedded_pos = self.pos_embedder(coords).view(batch, self.pos_embed_dim)
+        #     feats = torch.cat([feats, embedded_pos], dim=-1)
+        # TODO(galhar): Stop the gradients from the features cosine similarity to affect the densities, and only use it to change the features themselves as this is what we seek for, the other thing would come from the depth supervision
 
         return dict(grid_features=feats)
