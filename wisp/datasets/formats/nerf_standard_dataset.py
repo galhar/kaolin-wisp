@@ -66,7 +66,7 @@ class NeRFSyntheticDataset(MultiviewDataset):
         self.mip = mip
         self.bg_color = bg_color
 
-        self.coords = self.data = self.coords_center = self.coords_scale = None
+        self.coords = self.data = None
         self._transform_file = self._validate_and_find_transform()
         self.data = self.load()
 
@@ -469,7 +469,7 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
     """
 
     def __init__(self, dataset_path: str, colmap_res_path: str, split: str, bg_color: str, mip: int = 0,
-                 dataset_num_workers: int = -1, transform: Callable = None):
+                 dataset_num_workers: int = -1, transform: Callable = None, coords_norm_factors=[None, None]):
         """ Loads the NeRF-synthetic data and applies dataset specific transforms required for compatibility with the
         framework.
         The loaded data is cached inside the `data` field.
@@ -492,6 +492,7 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
                 When multiple transforms are needed, the transform callable may be a composition of multiple Callable.
         """
         self.colmap_res_path = colmap_res_path
+        self.coords_center, self.coords_scale = coords_norm_factors
         super().__init__(dataset_path=dataset_path, dataset_num_workers=dataset_num_workers,
                          transform=transform, split=split, bg_color=bg_color, mip=mip)
 
@@ -518,7 +519,8 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
             bg_color=self.bg_color,
             mip=self.mip,
             dataset_num_workers=self.dataset_num_workers,
-            transform=transform
+            transform=transform,
+            coords_norm_factors=[self.coords_center, self.coords_scale]
         )
 
     def __getitem__(self, idx) -> MultiviewBatch:
@@ -726,7 +728,9 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
                 gt_depth_and_error, dtype=torch.float32)
 
         # Take all of the supervision points, and make sure they fit in the feature grid
-        depths, rays, coords_center, coords_scale = self._normalize(colmap_depth_gt_sparse[...,0], cameras, rays)
+        depths, rays, coords_center, coords_scale = self._normalize(colmap_depth_gt_sparse[...,0], cameras, rays, self.coords_center, self.coords_scale)
+        self.coords_center = coords_center
+        self.coords_scale = coords_scale
         colmap_depth_gt_sparse[..., 0] = depths
 
         # Check how many from the rays in each batch comes from the depth supervision
@@ -743,7 +747,7 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
         return {"rgb": rgbs, "masks": masks, "rays": rays, "cameras": cameras, "gt_depth": colmap_depth_gt_sparse.to(rgbs.device)}
 
     @staticmethod
-    def _normalize(depths: torch.Tensor, cameras: Dict[str, Camera], rays: List[Rays]):
+    def _normalize(depths: torch.Tensor, cameras: Dict[str, Camera], rays: List[Rays], coords_center, coords_scale):
         """ Normalizes the content of all views to fit within an axis aligned bounding box of [-1, 1]:
         1. The pointcloud of a little gap from the edges is created.
         2. The pointcloud is normalized within the AABB of [-1, 1].
@@ -759,8 +763,9 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
         # edge_coords = create_edges_pointcloud_from_rays(rays)
         # normalized_coords, coords_center, coords_scale = normalize_pointcloud(edge_coords, return_scale=True)
         #
-        coords = create_edges_pointcloud_from_rays(rays)
-        normalized_coords, coords_center, coords_scale = normalize_pointcloud(coords, return_scale=True)
+        if coords_center is None or coords_scale is None:
+            coords = create_edges_pointcloud_from_rays(rays)
+            normalized_coords, coords_center, coords_scale = normalize_pointcloud(coords, return_scale=True)
 
         depths = depths * coords_scale
         rays.origins = (rays.origins - coords_center) * coords_scale
