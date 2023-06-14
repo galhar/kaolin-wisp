@@ -19,10 +19,11 @@ from wisp.app_utils import default_log_setup, args_to_log_format
 import wisp.config_parser as config_parser
 from wisp.framework import WispState
 from wisp.datasets import MultiviewDataset, SampleRays, SampleRaysWithSparseChannel
+from wisp.models.decoders import DecoderFeatureMapToImage
 from wisp.models.grids import BLASGrid, OctreeGrid, CodebookOctreeGrid, TriplanarGrid, HashGrid
 from wisp.tracers import BaseTracer, PackedRFTracer
 from wisp.models.nefs import BaseNeuralField, NeuralRadianceFieldWithFeaturesChannel
-from wisp.models.pipeline import Pipeline
+from wisp.models.pipeline import Pipeline, Pipeline2DDecoder
 from wisp.trainers import BaseTrainer, MultiviewTrainer
 from wisp.trainers.multiview_trainer import MultiviewWithSparseDepthGtTrainer
 
@@ -137,6 +138,40 @@ def parse_args():
     nef_group.add_argument('--hidden-dim', type=int, help='MLP Decoder of neural field: width of all hidden layers.')
     nef_group.add_argument('--num-layers', type=int, help='MLP Decoder of neural field: number of hidden layers.')
     nef_group.add_argument('--extra-channels', type=str, choices=['grid_features'],
+                           default='grid_features',
+                           help='Extra channel of grid_features if desired')
+
+    decoder2D_group = parser.add_argument_group('decoder2D')
+    decoder2D_input_dim
+    decoder2D_output_dim
+    decoder2D_activation
+    decoder2D_num_layers
+    decoder2D_kernel_siz
+    decoder2D_group.add_argument('--pos-embedder', type=str, choices=['none', 'identity', 'positional'],
+                           default='positional',
+                           help='MLP Decoder of neural field: Positional embedder used to encode input coordinates'
+                                'or view directions.')
+    decoder2D_group.add_argument('--view-embedder', type=str, choices=['none', 'identity', 'positional'],
+                           default='positional',
+                           help='MLP Decoder of neural field: Positional embedder used to encode view direction')
+    decoder2D_group.add_argument('--position-input', type=bool, default=False,
+                           help='If True, position coords will be concatenated to the '
+                                'features / positional embeddings when fed into the decoder.')
+    decoder2D_group.add_argument('--pos-multires', type=int, default=10,
+                           help='MLP Decoder of neural field: Number of frequencies to use for positional encoding'
+                                'of input coordinates')
+    decoder2D_group.add_argument('--view-multires', type=int, default=4,
+                           help='MLP Decoder of neural field: Number of frequencies to use for positional encoding'
+                                'of view direction')
+    decoder2D_group.add_argument('--layer-type', type=str, default='none',
+                           choices=['none', 'spectral_norm', 'frobenius_norm', 'l_1_norm', 'l_inf_norm'])
+    decoder2D_group.add_argument('--activation-type', type=str, default='relu',
+                           choices=['relu', 'sin', 'leaky_relu'])
+    decoder2D_group.add_argument('--decoder2D-input-dim', type=int)
+    decoder2D_group.add_argument('--decoder2D_output_dim', type=int)
+    decoder2D_group.add_argument('--decoder2D_output_dim', type=int)
+    decoder2D_group.add_argument('--num-layers', type=int, help='MLP Decoder of neural field: number of hidden layers.')
+    decoder2D_group.add_argument('--extra-channels', type=str, choices=['grid_features'],
                            default='grid_features',
                            help='Extra channel of grid_features if desired')
 
@@ -424,8 +459,14 @@ def load_neural_pipeline(args, dataset, device) -> Pipeline:
     Together, they form the complete pipeline required to render a neural primitive from input rays / coordinates.
     """
     nef = load_neural_field(args=args, dataset=dataset)
+    decoder2D = DecoderFeatureMapToImage(
+        input_dim=args.decoder2D_input_dim,
+        output_dim=args.decoder2D_output_dim,
+        args.decoder2D_num_layers,
+        args.decoder2D_kernel_size
+    )
     tracer = load_tracer(args=args)
-    pipeline = Pipeline(nef=nef, tracer=tracer)
+    pipeline = Pipeline2DDecoder(nef=nef, decoder2D=decoder2D, tracer=tracer)
     if args.pretrained:
         if args.model_format == "full":
             pipeline = torch.load(args.pretrained)
@@ -449,7 +490,7 @@ def load_trainer(pipeline, train_dataset, validation_dataset, device, scene_stat
     optimizer_cls = config_parser.get_module(name=args.optimizer_type)
     optimizer_params = config_parser.get_args_for_function(args, optimizer_cls)
 
-    trainer = MultiviewWithSparseDepthGtTrainer(pipeline=pipeline,
+    trainer = MultiviewTrainer(pipeline=pipeline,
                                train_dataset=train_dataset,
                                validation_dataset=validation_dataset,
                                num_epochs=args.epochs,
@@ -469,8 +510,8 @@ def load_trainer(pipeline, train_dataset, validation_dataset, device, scene_stat
                                scene_state=scene_state,
                                trainer_mode='validate' if args.valid_only else 'train',
                                using_wandb=args.wandb_project is not None,
-                               enable_amp=not args.disable_amp,
-                               relative_depth_loss=args.relative_depth_loss)
+                               enable_amp=not args.disable_amp
+                               )
     return trainer
 
 
@@ -500,26 +541,20 @@ if __name__ == '__main__':
         # '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_5_views/',
         '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_5_v_to_add_to_existing_colmap/',
         '--config', 'app/nerf/configs/nerf_hash.yaml',
-        '--wandb-project', 'wisp_playing',
-        '--wandb-run-name', 'try_my_colmap_run_with_proper_val_dir',#strong_f_loss_optimize_features_loss_separately',
+        '--wandb-project', 'wisp_playing_2d_decoder',
+        '--wandb-run-name', 'initial_try_2d_decoder',
         '--wandb-viz-nerf-distance', '2',
         '--epochs', '150',
         '--num-rays-sampled-per-img', '4096',
         '--num-steps', '512',
-        '--multiview-dataset-format', 'standard_with_colmap',
-        # '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
-        '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern_5_v_to_add_to_existing_colmap',
-        '--depth-loss-lambda', '1.5',
+        '--multiview-dataset-format', 'standard',
         '--rgb-loss-lambda', '1.',
-        '--cosine-similarity-loss-lambda', '10.',
-        '--force-rgb-random',
         '--valid-every', '30',
         '--prune-every', '31',
-        '--exp-name', 'debug_loss',
         '--activation-type', 'relu',
         '--log-validation-image',
         '--relative-depth-loss',
-        '--batch-size', '2'
+        '--batch-size', '1'
     ]
 
     for arg_to_add in insert_args_to_cli:

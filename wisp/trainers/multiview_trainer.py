@@ -274,7 +274,7 @@ class MultiviewTrainer(BaseTrainer):
 
 
 
-class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
+class MultiviewWith2DDecoderTrainer(BaseTrainer):
 
     def __init__(self, pipeline, train_dataset: WispDataset, num_epochs, batch_size,
                  optim_cls, lr, weight_decay, grid_lr_weight, optim_params, log_dir, device,
@@ -311,9 +311,6 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         """
         super().init_log_dict()
         self.log_dict['rgb_loss'] = 0.0
-        self.log_dict['depth_loss'] = 0.0
-        self.log_dict['depth_loss'] = 0.0
-        self.log_dict['feats_cosine_similarity_loss'] = 0.0
         self.log_dict['lr'] = self.optimizer.param_groups[0]['lr']
 
     @torch.cuda.nvtx.range("MultiviewTrainer.step")
@@ -323,8 +320,6 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         # Map to device
         rays = data['rays'].to(self.device).squeeze(0)
         rgb_gts = data['rgb'].to(self.device).squeeze(0)
-        depth_gts_data = data['gt_depth'].to(self.device).squeeze(0)
-        depth_gts, depth_gts_error, point3d_idx = depth_gts_data[:,0 , None], depth_gts_data[:,1 , None], depth_gts_data[:,2 , None]
 
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -340,57 +335,15 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
             # Sample only the max lod (None is max lod by default)
             lod_idx = None
 
-        rb = self.pipeline(rays=rays, lod_idx=lod_idx, channels=["rgb", "depth", 'grid_features'])
+        rb = self.pipeline(rays=rays, lod_idx=lod_idx, channels=["rgb", "depth", 'grid_features', 'alpha'])
 
         # RGB Loss
         rgb_gt_idx = ~rgb_gts.isnan()
         rgb_loss = torch.abs(rb.rgb[rgb_gt_idx] - rgb_gts[rgb_gt_idx])
         rgb_loss = rgb_loss.mean()
 
-        # Depth Loss
-        depth_gt_idx = ~depth_gts.isnan()
-        if self.relative_depth_loss:
-            depth_loss = (rb.depth[depth_gt_idx] - depth_gts[depth_gt_idx])**2 * depth_gts_error[depth_gt_idx]
-        else:
-            depth_loss = (rb.depth[depth_gt_idx] - depth_gts[depth_gt_idx]) ** 2
-        depth_loss = depth_loss.mean()
-
-        # Features Similarity Loss
-        feats_map = rb.grid_features
-        vals, dups_idx = MultiviewWithSparseDepthGtTrainer.get_duplications_idx(point3d_idx.cpu().numpy()[:,0], only_doubles=True)
-        dups_idx = np.array(dups_idx)
-
-        # Sample negative from sups_idxs pool, to supply negative gt for the points that got positive gt
-        negative_samples_pool_side_a = dups_idx.flatten()
-        negative_samples_pool_side_b = negative_samples_pool_side_a.copy()
-        np.random.shuffle(negative_samples_pool_side_b)
-        neg_pairs_idx = np.vstack([negative_samples_pool_side_a, negative_samples_pool_side_b]).T
-        neg_pairs_idx = neg_pairs_idx[:len(dups_idx),:]
-
-        # Note that the mean over the l2 between the features includes mean over some zeros,
-        # since it has duplication of the same ray when the same depth ray was randomly sampled
-        # TODO:
-        #  Sample also negative points:
-        #  1. The known negative points are points from the duplicates pool since we know they have a different match,
-        #  but they are little so maybe we should add randomly sampled as negative.
-        #  2. We can sample the points where it is hardest, meaning points where the rgb is similar, as negative sampled.
-
-        all_pairs = torch.cat([feats_map[dups_idx, :], feats_map[neg_pairs_idx, :]])
-        device = all_pairs.device
-        points_pairs_labels = torch.concat([
-            torch.ones(size=(len(dups_idx),), device=device),
-            - torch.ones(size=(len(neg_pairs_idx),), device=device)
-        ])
-
-        cos_sim = torch.nn.CosineEmbeddingLoss()
-        feats_cosine_similarity_loss = cos_sim(all_pairs[:,0,:], all_pairs[:,1,:], points_pairs_labels)
-
         loss += self.extra_args["rgb_loss_lambda"] * rgb_loss
-        loss += self.extra_args["depth_loss_lambda"] * depth_loss
-        loss += self.extra_args["cosine_similarity_loss_lambda"] * feats_cosine_similarity_loss
         self.log_dict['rgb_loss'] += rgb_loss.item()
-        self.log_dict['depth_loss'] += depth_loss.item()
-        self.log_dict['feats_cosine_similarity_loss'] += feats_cosine_similarity_loss.item()
 
         self.log_dict['total_loss'] += loss.item()
 
@@ -603,31 +556,3 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
                 camera_distance=wandb_viz_nerf_distance
             )
         super().post_training()
-
-    @staticmethod
-    def get_duplications_idx(arr: np.ndarray, only_doubles=True):
-        # creates an array of indices, sorted by unique element
-        idx_sort = np.argsort(arr)
-
-        # sorts records array so all unique elements are together
-        sorted_arr = arr[idx_sort]
-
-        # returns the unique values, the index of the first occurrence of a value, and the count for each element
-        vals, idx_start, count = np.unique(sorted_arr, return_counts=True, return_index=True)
-
-        # splits the indices into separate arrays
-        idxs_res = np.split(idx_sort, idx_start[1:])
-
-        # Filter out the idx of nans
-        nans_idx = np.isnan(vals)
-        nan_i = np.argwhere(nans_idx)
-
-        # filter them with respect to their size, keeping only items occurring more than once
-        size_filter = (count == 2) if only_doubles else (count > 1)
-        filtered_vals = vals[size_filter & (~nans_idx)]
-        filtered_enumerate_idx_res = filter(lambda enum_res: enum_res[1].size > 1
-                                                             and enum_res[0] != nan_i
-                                                             and (not only_doubles or enum_res[1].size == 2 ),
-                                            enumerate(idxs_res))
-        filtered_idx = list(map(lambda x: x[1], filtered_enumerate_idx_res))
-        return filtered_vals, filtered_idx
