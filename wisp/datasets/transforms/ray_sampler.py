@@ -5,9 +5,10 @@
 # and any modifications thereto.  Any use, reproduction, disclosure or
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
-
+import numpy as np
 import torch
 from wisp.datasets.batch import MultiviewBatch
+from wisp.datasets.dift.utils.utils import return_correspondences
 
 
 class SampleRays:
@@ -26,6 +27,35 @@ class SampleRays:
         # Loop over ray values in this batch
         for channel_name, ray_value in inputs.ray_values().items():
             out[channel_name] = ray_value[ray_idx].contiguous()
+        return out
+
+
+class SampleRaysCalculateCorrespondences:
+    """ A dataset transform for sub-sampling a fixed amount of rays. """
+    def __init__(self, num_samples):
+        self.num_samples = num_samples
+
+    @torch.cuda.nvtx.range("SampleRays")
+    def __call__(self, inputs: MultiviewBatch, all_data_features):
+        device = inputs['rays'].origins.device
+        ray_idx = torch.randint(0, inputs['rays'].shape[0], [self.num_samples], device=device)
+
+        out = {}
+        out['rays'] = inputs['rays'][ray_idx].contiguous()
+
+        # Get correspondences ("for loop" instead of torch vectorization due to fear of memory limitation from calculating ~1000 multiplied by HxW):
+        N = all_data_features.shape[0]
+        corrs = torch.zeros((ray_idx.shape[0], N - 1), dtype=torch.int8)
+        # TODO: save the correpondences for each calculated point for both sides, for later usage, in the dataset "cache" for that.
+        for i in ray_idx:
+            corrs[i] = return_correspondences(out['ft'][i], all_data_features)
+
+        # Loop over ray values in this batch
+        for channel_name, ray_value in inputs.ray_values().items():
+            out[channel_name] = ray_value[ray_idx].contiguous()
+
+        out['correspondences'] = corrs.contigous()
+
         return out
 
 

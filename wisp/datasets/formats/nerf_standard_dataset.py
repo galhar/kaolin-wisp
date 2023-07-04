@@ -7,6 +7,8 @@
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
 from __future__ import annotations
+
+import gc
 import os
 import re
 import glob
@@ -29,6 +31,8 @@ from wisp.ops.raygen import generate_pinhole_rays, generate_ortho_rays, generate
 from wisp.ops.image import resize_mip, load_rgb
 from wisp.datasets.base_datasets import MultiviewDataset
 from wisp.datasets.batch import MultiviewBatch, MultiviewBatchWithColmap
+from wisp.datasets.dift.models.dift_sd import SDFeaturizer
+
 
 
 class NeRFSyntheticDataset(MultiviewDataset):
@@ -39,7 +43,7 @@ class NeRFSyntheticDataset(MultiviewDataset):
     """
 
     def __init__(self, dataset_path: str, split: str, bg_color: str, mip: int = 0,
-                 dataset_num_workers: int = -1, transform: Callable = None):
+                 dataset_num_workers: int = -1, transform: Callable = None, coords_norm_factors=[None, None]):
         """ Loads the NeRF-synthetic data and applies dataset specific transforms required for compatibility with the
         framework.
         The loaded data is cached inside the `data` field.
@@ -63,6 +67,7 @@ class NeRFSyntheticDataset(MultiviewDataset):
         """
         super().__init__(dataset_path=dataset_path, dataset_num_workers=dataset_num_workers,
                          transform=transform, split=split)
+        self.coords_center, self.coords_scale = coords_norm_factors
         self.mip = mip
         self.bg_color = bg_color
 
@@ -94,7 +99,8 @@ class NeRFSyntheticDataset(MultiviewDataset):
             bg_color=self.bg_color,
             mip=self.mip,
             dataset_num_workers=self.dataset_num_workers,
-            transform=transform
+            transform=transform,
+            coords_norm_factors=[self.coords_center, self.coords_scale]
         )
 
     def __getitem__(self, idx) -> MultiviewBatch:
@@ -307,7 +313,7 @@ class NeRFSyntheticDataset(MultiviewDataset):
 
         return self._collect_data_entries(metadata=metadata, basenames=basenames, imgs=imgs, poses=poses)
 
-    def _collect_data_entries(self, metadata, basenames, imgs, poses) -> Dict[str, Union[torch.Tensor, Rays, Camera]]:
+    def _collect_data_entries(self, metadata, basenames, imgs, poses, **kargs) -> Dict[str, Union[torch.Tensor, Rays, Camera]]:
         """ Internal function for aggregating the pre-loaded multi-views.
         This function will:
             1. Read the metadata & compute the intrinsic parameters of the camera view, (such as fov and focal length
@@ -416,6 +422,9 @@ class NeRFSyntheticDataset(MultiviewDataset):
                     ('cpu'))
 
         rays = Rays.stack(rays).to(dtype=torch.float)
+        rays, coords_center, coords_scale = self._normalize(cameras, rays, self.coords_center, self.coords_scale)
+        self.coords_center = coords_center
+        self.coords_scale = coords_scale
 
         rgbs = imgs[... ,:3]
         alpha = imgs[... ,3:4]
@@ -432,7 +441,41 @@ class NeRFSyntheticDataset(MultiviewDataset):
                 rgbs[... ,:3] += ( 1 -alpha)
                 rgbs = np.clip(rgbs, 0.0, 1.0)
 
-        return {"rgb": rgbs, "masks": masks, "rays": rays, "cameras": cameras}
+        data_dict = {"rgb": rgbs, "masks": masks, "rays": rays, "cameras": cameras}
+        for key, value in kargs:
+            data_dict[key] = value
+        return data_dict
+
+    @staticmethod
+    def _normalize(cameras: Dict[str, Camera], rays: List[Rays], coords_center, coords_scale):
+        """ Normalizes the content of all views to fit within an axis aligned bounding box of [-1, 1]:
+        1. The pointcloud of a little gap from the edges is created.
+        2. The pointcloud is normalized within the AABB of [-1, 1].
+        3. The depth information, generated rays and cameras are rescaled according to normalization factors:
+            coords_center, coords_scale.
+
+        Returns:
+            - (wisp.core.Rays) rays: the rescaled rays
+            - (torch.Tensor) coords_center: Value used to centeralize the point cloud around 0, 0, 0.
+            - (torch.Tensor) coords_scale: Value used to scale the point cloud within [-1, 1].
+        """
+        # edge_coords = create_edges_pointcloud_from_rays(rays)
+        # normalized_coords, coords_center, coords_scale = normalize_pointcloud(edge_coords, return_scale=True)
+        #
+        if coords_center is None or coords_scale is None:
+            coords = create_edges_pointcloud_from_rays(rays)
+            normalized_coords, coords_center, coords_scale = normalize_pointcloud(coords, return_scale=True)
+
+        rays.origins = (rays.origins - coords_center) * coords_scale
+        # The following is only correct when using a single dist_min and dist_max for all rays
+        rays.dist_min *= coords_scale.item()
+        rays.dist_max *= coords_scale.item()
+
+        for cam_id, cam in cameras.items():
+            cam.translate(-coords_center.to(cam.dtype))
+            cam.t = cam.t * coords_scale.to(cam.dtype)
+
+        return rays, coords_center, coords_scale
 
     def flatten_tensors(self) -> None:
         """ Flattens the cached data tensors to (NUM_VIEWS, NUM_RAYS, *).
@@ -787,3 +830,127 @@ class NeRFSyntheticDatasetWithCOLMAP(NeRFSyntheticDataset):
         self.data["gt_depth"] = self.data["gt_depth"].reshape(num_imgs, -1, 3)
         if "masks" in self.data:
             self.data["masks"] = self.data["masks"].reshape(num_imgs, -1, 1)
+
+
+
+
+class NeRFSyntheticDatasetWithDIFT(NeRFSyntheticDataset):
+
+    def __init__(self, dataset_path: str, split: str, bg_color: str, scene_name: str, dift_img_size: int = 256,
+                 dift_ensemble: int = 4, mip: int = 0, dataset_num_workers: int = -1, transform: Callable = None,
+                 coords_norm_factors=[None, None]):
+        """ Loads the NeRF-synthetic data and applies dataset specific transforms required for compatibility with the
+        framework.
+        The loaded data is cached inside the `data` field.
+
+        Args:
+            dataset_path (str): The root directory of the dataset, where images and json files of a single multiview
+                scene reside.
+            split (str): The dataset split to use, corresponding to the transform file to load, when splits are
+                available. In case of a single transform file, it will be considered as a single split of
+                'train' by default.
+                Options: 'train', 'val', 'test'.
+            bg_color (str): The background color to use for when alpha=0.
+                Options: 'black', 'white'.
+            mip (int): If provided, will rescale images by 2**mip. Useful when large images are loaded.
+            dataset_num_workers (int): The number of workers to spawn for multiprocessed loading.
+                If dataset_num_workers < 1, processing will take place on the main process.
+            transform (Optional[Callable]):
+                Transform function applied per batch when data is accessed with __get_item__.
+                For example: ray sampling, to filter the amount of rays returned per batch.
+                When multiple transforms are needed, the transform callable may be a composition of multiple Callable.
+        """
+        self.scene_name = scene_name
+        self.dift_img_size = dift_img_size
+        self.dift_ensemble = dift_ensemble
+        super().__init__(dataset_path=dataset_path, dataset_num_workers=dataset_num_workers,
+                         transform=transform, split=split, bg_color=bg_color, mip=mip, coords_norm_factors=coords_norm_factors)
+
+    def __getitem__(self, idx) -> MultiviewBatch:
+        """Retrieve a batch of rays and their corresponding values.
+        Rays are precomputed from the dataset's cameras, and are cached within the dataset.
+        By default, rays are assumed to have corresponding rgb values, sampled from the dataset's images.
+
+        Returns:
+            (MultiviewBatch): A batch of rays and their rgb values. The fields can be accessed as a dictionary:
+                "rays" - a wisp.core.Rays pack of ray origins and directions, pre-generated from the dataset camera.
+                "rgb" - a torch.Tensor of rgb color which corresponds the gt image's pixel each ray intersects.
+                "masks" - a torch.BoolTensor specifying if the ray hits a dense area or not.
+                 This is estimated from the alpha channel of the gt image, where mask=True if alpha > 0.5.
+        """
+        out = MultiviewBatchWithColmap(
+            rays=self.data["rays"][idx],
+            rgb=self.data["rgb"][idx],
+            masks=self.data["masks"][idx]
+        )
+
+        if self.transform is not None:
+            out = self.transform(out, self.data['ft'])
+
+        return out
+
+    def load_singleprocess(self):
+        """Standard parsing function for loading nerf-synthetic files on the main process.
+        This follows the conventions defined in https://github.com/NVlabs/instant-ngp.
+
+        Returns:
+            (dict of torch.FloatTensors): Channels of information from NeRF:
+                - 'rays': a list of ray packs, each entry corresponds to a single camera view
+                - 'rgb', 'masks': a list of torch.Tensors, each entry corresponds to a single gt image
+                - 'cameras': a list of Camera objects, one camera per view
+        """
+        with open(self._transform_file, 'r') as f:
+            metadata = json.load(f)
+
+        # Load the images
+
+        imgs = []
+        poses = []
+        basenames = []
+
+        for frame in tqdm(metadata['frames'], desc='loading data'):
+            _data = self._load_single_entry(frame, self.dataset_path, mip=self.mip)
+            if _data is not None:
+                basenames.append(_data["basename"])
+                imgs.append(_data["img"])
+                poses.append(_data["pose"])
+
+
+        dift_feats = self.calc_dift_features(imgs) # Ideally here I would also calculate correspondences for each point with the other points, later sampling from here. But due to memory limitations it is done later in the sampling process
+
+        return self._collect_data_entries(metadata=metadata, basenames=basenames, imgs=imgs, poses=poses, ft=dift_feats)
+
+
+    def calc_dift_features(self, imgs):
+        dift = SDFeaturizer(device='cuda:1')
+        prompt = f'a photo of a {self.scene_name}'
+
+        orig_img_size = imgs[0].shape
+        ft = []
+        for img in imgs:
+            resized = cv2.resize(img, dsize=(self.dift_img_size, self.dift_img_size), interpolation=cv2.INTER_CUBIC)
+            # TODO make sure this normalizes to [-1,1]
+            resized = (resized - 0.5) * 2
+            ft.append(dift.forward(resized,
+                                   prompt=prompt,
+                                   ensemble_size=self.dift_ensemble))
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        ft = torch.cat(ft, dim=0)
+        gc.collect()
+        torch.cuda.empty_cache()
+        return ft
+
+
+    def flatten_tensors(self) -> None:
+        """ Flattens the cached data tensors to (NUM_VIEWS, NUM_RAYS, *).
+        """
+        num_imgs = len(self)
+        self.data["rgb"] = self.data["rgb"].reshape(num_imgs, -1, 3)
+        self.data["rays"] = self.data["rays"].reshape(num_imgs, -1, 3)
+        self.data["ft"] = self.data["ft"].reshape(num_imgs, -1, self.data["ft"].shape[-1])
+        if "masks" in self.data:
+            self.data["masks"] = self.data["masks"].reshape(num_imgs, -1, 1)
+
+

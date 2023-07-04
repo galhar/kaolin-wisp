@@ -13,6 +13,8 @@ from tqdm import tqdm
 import random
 import pandas as pd
 import torch
+
+from wisp.datasets.dift.utils.utils import EMPTY_POINT
 from wisp.trainers import BaseTrainer, log_metric_to_wandb, log_images_to_wandb
 from wisp.ops.image import write_png, write_exr
 from wisp.ops.image.metrics import psnr, lpips, ssim
@@ -39,9 +41,16 @@ class MultiviewTrainer(BaseTrainer):
         super().pre_step()
 
         if self.extra_args["prune_every"] > -1 and \
-           self.total_iterations > 1 and \
-           self.total_iterations % self.extra_args["prune_every"] == 0:
+           self.epoch > 1 and \
+           self.epoch % self.extra_args["prune_every"] == 0:
             self.pipeline.nef.prune()
+
+    def end_epoch(self):
+        """End epoch.
+        """
+        super().end_epoch()
+        if self.epoch < self.max_epochs:
+            self.features_lr_scheduler.step()
 
     def init_log_dict(self):
         """Custom log dict.
@@ -89,10 +98,19 @@ class MultiviewTrainer(BaseTrainer):
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
+    def log_tb(self):
+        super().log_tb()
+
+        for name, param in self.pipeline.nef.named_parameters():
+            if param.grad is not None:
+                self.writer.add_histogram(name + "/grad", param.grad.cpu(), self.epoch)
+
     def log_cli(self):
         log_text = 'EPOCH {}/{}'.format(self.epoch, self.max_epochs)
-        log_text += ' | total loss: {:>.3E}'.format(self.log_dict['total_loss'] / len(self.train_data_loader))
-        log_text += ' | rgb loss: {:>.3E}'.format(self.log_dict['rgb_loss'] / len(self.train_data_loader))
+        n_batches = len(self.train_data_loader)
+        for key, val in self.log_dict.items():
+            if 'loss' in key:
+                log_text += ' | {}: {:>.3E}'.format(key.replace('_', ' '), val / n_batches)
         log_text += ' | lr: {:>.4E}'.format(self.log_dict['lr'])
 
         log.info(log_text)
@@ -114,13 +132,13 @@ class MultiviewTrainer(BaseTrainer):
                 gts = gts.reshape(*img_shape, -1)
                 rb = rb.reshape(*img_shape, -1)
 
-                psnr_total += psnr(rb.rgb[...,:3], gts[...,:3])
+                psnr_total += psnr(rb.rgb[..., :3], gts[..., :3])
                 if lpips_model:
-                    lpips_total += lpips(rb.rgb[...,:3], gts[...,:3], lpips_model)
-                ssim_total += ssim(rb.rgb[...,:3], gts[...,:3])
+                    lpips_total += lpips(rb.rgb[..., :3], gts[..., :3], lpips_model)
+                ssim_total += ssim(rb.rgb[..., :3], gts[..., :3])
 
                 out_rb = RenderBuffer(rgb=rb.rgb, depth=rb.depth, alpha=rb.alpha,
-                                      gts=gts, err=(gts[..., :3] - rb.rgb[..., :3])**2)
+                                      gts=gts, err=(gts[..., :3] - rb.rgb[..., :3]) ** 2)
                 exrdict = out_rb.reshape(*img_shape, -1).cpu().exr_dict()
 
                 out_name = f"{idx}"
@@ -136,6 +154,20 @@ class MultiviewTrainer(BaseTrainer):
                         self.exr_exception = True
                         log.info("Skipping EXR logging since pyexr is not found.")
                 write_png(os.path.join(self.valid_log_dir, out_name + ".png"), rb.cpu().image().byte().rgb)
+
+                # Log to wandb the validation images results
+                if self.extra_args['log_validation_image'] and idx == 0:
+                    out_rb = out_rb.reshape(*img_shape, -1).cpu().image().byte().numpy_dict()
+                    if out_rb.get('rgb') is not None:
+                        log_images_to_wandb(f"Validation/RGB", out_rb['rgb'].transpose((2, 0, 1)), idx)
+                    if out_rb.get('rgba') is not None:
+                        log_images_to_wandb(f"Validation/RGBA", out_rb['rgba'].transpose((2, 0, 1)), idx)
+                    if out_rb.get('depth') is not None:
+                        log_images_to_wandb(f"Validation/Depth", out_rb['depth'].transpose((2, 0, 1)), idx)
+                    if out_rb.get('normal') is not None:
+                        log_images_to_wandb(f"Validation/Normal", out_rb['normal'].transpose((2, 0, 1)), idx)
+                    if out_rb.get('alpha') is not None:
+                        log_images_to_wandb(f"Validation/Alpha", out_rb['alpha'].transpose((2, 0, 1)), idx)
 
         psnr_total /= img_count
         lpips_total /= img_count
@@ -340,7 +372,6 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
         """
         super().init_log_dict()
         self.log_dict['rgb_loss'] = 0.0
-        self.log_dict['depth_loss'] = 0.0
         self.log_dict['depth_loss'] = 0.0
         self.log_dict['feats_cosine_similarity_loss'] = 0.0
         self.log_dict['lr'] = self.optimizer.param_groups[0]['lr']
@@ -665,3 +696,56 @@ class MultiviewWithSparseDepthGtTrainer(BaseTrainer):
                                             enumerate(idxs_res))
         filtered_idx = list(map(lambda x: x[1], filtered_enumerate_idx_res))
         return filtered_vals, filtered_idx
+
+
+class MultiviewWithDiftTrainer(MultiviewTrainer):
+    def init_log_dict(self):
+        """Custom log dict.
+        """
+        super().init_log_dict()
+        self.log_dict['consistent_rgb_loss'] = 0.0
+
+    @torch.cuda.nvtx.range("MultiviewTrainer.step")
+    def step(self, data):
+        """Implement the optimization over image-space loss.
+        """
+        # Map to device
+        rays = data['rays'].to(self.device).squeeze(0)
+        rgb_gts = data['rgb'].to(self.device).squeeze(0)
+        corrs = data['correspondences'].to(self.device).squeeze(0)
+
+        self.optimizer.zero_grad(set_to_none=True)
+
+        general_loss = 0
+
+        if self.extra_args["random_lod"]:
+            # Sample from a geometric distribution
+            population = [i for i in range(self.pipeline.nef.grid.num_lods)]
+            weights = [2 ** i for i in range(self.pipeline.nef.grid.num_lods)]
+            weights = [i / sum(weights) for i in weights]
+            lod_idx = random.choices(population, weights)[0]
+        else:
+            # Sample only the max lod (None is max lod by default)
+            lod_idx = None
+
+        rb = self.pipeline(rays=rays, lod_idx=lod_idx, channels=["rgb", "depth"])
+
+        # RGB Loss
+        consistent_rgb_idx = torch.tensor([coor_point != EMPTY_POINT for coor_point in corrs])
+        rgb_loss = torch.abs(rb.rgb[~consistent_rgb_idx] - rgb_gts[~consistent_rgb_idx])
+        rgb_loss = rgb_loss.mean()
+
+        # Consistent RGB Loss
+        consistent_rgb_loss = torch.abs(rb.rgb[consistent_rgb_idx] - rgb_gts[consistent_rgb_idx])
+        consistent_rgb_loss = consistent_rgb_loss.mean()
+
+        general_loss += self.extra_args["rgb_loss_lambda"] * rgb_loss
+        general_loss += self.extra_args["consistent_loss_lambda"] * consistent_rgb_loss
+        self.log_dict['rgb_loss'] += rgb_loss.item()
+        self.log_dict['consistent_rgb_loss'] += consistent_rgb_loss.item()
+        self.log_dict['total_loss'] += general_loss.item()
+
+        with torch.cuda.nvtx.range("MultiviewTrainer.backward"):
+            self.scaler.scale(general_loss).backward(retain_graph=True)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
