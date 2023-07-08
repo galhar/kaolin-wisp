@@ -48,7 +48,7 @@ class SampleRaysCalculateCorrespondences:
         corrs = torch.zeros((ray_idx.shape[0], N - 1), dtype=torch.int8)
         # TODO: save the correpondences for each calculated point for both sides, for later usage, in the dataset "cache" for that.
         for i in ray_idx:
-            corrs[i] = return_correspondences(out['ft'][i], all_data_features)
+            corrs[i] = return_correspondences(inputs['ft'][i], all_data_features)
 
         # Loop over ray values in this batch
         for channel_name, ray_value in inputs.ray_values().items():

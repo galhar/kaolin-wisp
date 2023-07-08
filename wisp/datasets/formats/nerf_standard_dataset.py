@@ -31,7 +31,7 @@ from wisp.ops.raygen import generate_pinhole_rays, generate_ortho_rays, generate
 from wisp.ops.image import resize_mip, load_rgb
 from wisp.datasets.base_datasets import MultiviewDataset
 from wisp.datasets.batch import MultiviewBatch, MultiviewBatchWithColmap
-# from wisp.datasets.dift.models.dift_sd import SDFeaturizer
+from wisp.datasets.dift.models.dift_sd import SDFeaturizer
 
 
 
@@ -442,7 +442,7 @@ class NeRFSyntheticDataset(MultiviewDataset):
                 rgbs = np.clip(rgbs, 0.0, 1.0)
 
         data_dict = {"rgb": rgbs, "masks": masks, "rays": rays, "cameras": cameras}
-        for key, value in kargs:
+        for key, value in kargs.items():
             data_dict[key] = value
         return data_dict
 
@@ -878,10 +878,11 @@ class NeRFSyntheticDatasetWithDIFT(NeRFSyntheticDataset):
                 "masks" - a torch.BoolTensor specifying if the ray hits a dense area or not.
                  This is estimated from the alpha channel of the gt image, where mask=True if alpha > 0.5.
         """
-        out = MultiviewBatchWithColmap(
+        out = MultiviewBatch(
             rays=self.data["rays"][idx],
             rgb=self.data["rgb"][idx],
-            masks=self.data["masks"][idx]
+            masks=self.data["masks"][idx],
+            ft=self.data['ft'][idx]
         )
 
         if self.transform is not None:
@@ -923,15 +924,11 @@ class NeRFSyntheticDatasetWithDIFT(NeRFSyntheticDataset):
 
     def calc_dift_features(self, imgs):
         dift = SDFeaturizer(device='cuda:1')
-        prompt = f'a photo of a {self.scene_name}'
+        prompt = f'a photo of {self.scene_name}'
 
-        orig_img_size = imgs[0].shape
         ft = []
         for img in imgs:
-            resized = cv2.resize(img, dsize=(self.dift_img_size, self.dift_img_size), interpolation=cv2.INTER_CUBIC)
-            # TODO make sure this normalizes to [-1,1]
-            resized = (resized - 0.5) * 2
-            ft.append(dift.forward(resized,
+            ft.append(dift.forward(img, self.dift_img_size,
                                    prompt=prompt,
                                    ensemble_size=self.dift_ensemble))
             gc.collect()

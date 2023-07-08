@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from diffusers.models.unet_2d_condition import UNet2DConditionModel
 from diffusers import DDIMScheduler
 import gc
+import cv2
 from PIL import Image
 
 
@@ -201,13 +202,14 @@ class SDFeaturizer:
     @torch.no_grad()
     def forward(self,
                 img_tensor,
+                img_size_for_resize,
                 prompt,
                 t=261,
                 up_ft_index=1,
                 ensemble_size=8):
         '''
         Args:
-            img_tensor: should be a single torch tensor in the shape of [1, C, H, W] or [C, H, W]
+            img_tensor: should be a single torch tensor in the shape of [H, W, C]
             prompt: the prompt to use, a string
             t: the time step to use, should be an int in the range of [0, 1000]
             up_ft_index: which upsampling block of the U-Net to extract feature, you can choose [0, 1, 2, 3]
@@ -215,7 +217,23 @@ class SDFeaturizer:
         Return:
             unet_ft: a torch tensor in the shape of [1, c, h, w]
         '''
-        img_tensor = img_tensor.repeat(ensemble_size, 1, 1, 1).to_device(self.pipe.device)  # ensem, c, h, w
+        # Resize for square to predict over:
+        img_orig_shape = img_tensor.shape # h,w
+        resized = cv2.resize(img_tensor.cpu().numpy(), dsize=(img_size_for_resize, img_size_for_resize),
+                             interpolation=cv2.INTER_CUBIC)
+        resized = torch.from_numpy(resized).to(self.pipe.device)
+        # TODO make sure this normalizes to [-1,1]
+        resized = (resized - 0.5) * 2
+
+        img_tensor = resized
+
+
+        # change the image from [h,w,c] as in wisp to [c,h,w] as in dift:
+        img_tensor = img_tensor.permute((2, 0, 1))
+        gc.collect()
+
+
+        img_tensor = img_tensor.repeat(ensemble_size, 1, 1, 1).to(self.pipe.device)  # ensem, c, h, w
         prompt_embeds = self.pipe._encode_prompt(
             prompt=prompt,
             device=self.pipe.device,
@@ -229,4 +247,8 @@ class SDFeaturizer:
             prompt_embeds=prompt_embeds)
         unet_ft = unet_ft_all['up_ft'][up_ft_index]  # ensem, c, h, w
         unet_ft = unet_ft.mean(0, keepdim=True)  # 1,c,h,w
+
+        # TODO(galhar): handle with memory issues
+        unet_ft = nn.Upsample(size=(img_orig_shape[0], img_orig_shape[1]), mode='bilinear')(unet_ft) # change back to real w,h
+        unet_ft = unet_ft[0].permute((1, 2, 0)) # [1,c,h,w] to [h,w,c]
         return unet_ft
