@@ -730,6 +730,14 @@ class MultiviewWithDiftTrainer(MultiviewTrainer):
 
         rb = self.pipeline(rays=rays, lod_idx=lod_idx, channels=["rgb", "depth"])
 
+        # TODO(galhar): Try to render novel views between images with matches, and add consitency loss over them as well.
+        #  In the newly rendered image we can (using mean xyz frmo both images) asses where
+        #  should be a matching point, then adding cos loss over the features of this point to the matching points.
+        #  Can be done in another special epoch in which this operation is done, to avoid holding in memory 3 images at once.
+        #  It sounds similar to DietNeRF except that it tries to work locally. We can do it not on points, rather on patches (Add vgg loss over the environment of the point in the newly rendered image, and in the train image)
+
+
+
         # RGB Loss
         consistent_rgb_idx = torch.tensor([coor_point != EMPTY_POINT for coor_point in corrs])
         rgb_loss = torch.abs(rb.rgb[~consistent_rgb_idx] - rgb_gts[~consistent_rgb_idx])
