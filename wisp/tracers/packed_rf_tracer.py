@@ -94,7 +94,7 @@ class PackedRFTracer(BaseTracer):
         N = rays.origins.shape[0]
         
         if "depth" in channels:
-            depth = torch.zeros(N, rays.dist_max, device=rays.origins.device) # TODO(galhar) change the default depth to the far value
+            depth = torch.full((N,1), float(rays.dist_max), device=rays.origins.device) # TODO(galhar) change the default depth to the far value
         else: 
             depth = None
         

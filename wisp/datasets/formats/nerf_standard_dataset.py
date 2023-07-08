@@ -31,7 +31,7 @@ from wisp.ops.raygen import generate_pinhole_rays, generate_ortho_rays, generate
 from wisp.ops.image import resize_mip, load_rgb
 from wisp.datasets.base_datasets import MultiviewDataset
 from wisp.datasets.batch import MultiviewBatch, MultiviewBatchWithColmap
-from wisp.datasets.dift.models.dift_sd import SDFeaturizer
+# from wisp.datasets.dift.models.dift_sd import SDFeaturizer
 
 
 

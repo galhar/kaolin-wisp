@@ -497,21 +497,21 @@ def is_interactive() -> bool:
 
 if __name__ == '__main__':
     insert_args_to_cli = [
-        # '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_in_nerf_format_5_views/',
-        '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_5_v_to_add_to_existing_colmap/',
+        '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_try_colmap/',
+        # '--dataset-path', '/home/galharari/datasets/nerf_llff_data/fern_5_v_to_add_to_existing_colmap/',
         '--config', 'app/nerf/configs/nerf_hash.yaml',
         '--wandb-project', 'wisp_playing',
-        '--wandb-run-name', 'try_my_colmap_run_with_proper_val_dir_fixed_norm',#strong_f_loss_optimize_features_loss_separately',
+        '--wandb-run-name', 'all_views_debug_dift_env',
         '--wandb-viz-nerf-distance', '2',
         '--epochs', '150',
         '--num-rays-sampled-per-img', '4096',
         '--num-steps', '512',
         '--multiview-dataset-format', 'standard_with_colmap',
-        # '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
-        '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern_5_v_to_add_to_existing_colmap',
-        '--depth-loss-lambda', '1.5',
+        '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern',
+        # '--colmap-results-path', '/home/galharari/datasets/nerf_llff_data/fern_5_v_to_add_to_existing_colmap',
+        # '--depth-loss-lambda', '1.5',
         '--rgb-loss-lambda', '1.',
-        '--cosine-similarity-loss-lambda', '10.',
+        # '--cosine-similarity-loss-lambda', '10.',
         '--force-rgb-random',
         '--valid-every', '30',
         '--prune-every', '31',
@@ -519,7 +519,9 @@ if __name__ == '__main__':
         '--activation-type', 'relu',
         '--log-validation-image',
         '--relative-depth-loss',
-        '--batch-size', '2'
+        # '--batch-size', '2',
+        '--batch-size', '1',
+        '--render-tb-every', '-1'
     ]
 
     for arg_to_add in insert_args_to_cli:

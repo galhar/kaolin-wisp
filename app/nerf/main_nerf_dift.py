@@ -511,7 +511,8 @@ if __name__ == '__main__':
         '--dift-scene-name', 'a fern plant in the lobby',
         '--dift-img_size', '256',
         '--dift-ensemble', '4',
-        '--consistent-loss-lambda', '7'
+        '--consistent-loss-lambda', '7',
+        '--render-tb-every', '-1'
     ]
     for arg_to_add in insert_args_to_cli:
         if arg_to_add.split(' ')[0] in sys.argv:
